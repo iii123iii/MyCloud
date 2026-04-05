@@ -1,0 +1,13 @@
+.env
+*.env.local
+node_modules/
+.next/
+frontend/.next/
+frontend/node_modules/
+backend/build/
+*.o
+*.a
+ssl_certs/
+__pycache__/
+.DS_Store
+Thumbs.db

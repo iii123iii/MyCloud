@@ -1,0 +1,89 @@
+services:
+
+  # ── Runs once on first boot, generates all secrets into a named volume ────────
+  init:
+    build: ./init
+    volumes:
+      - secrets:/run/secrets
+    # This service exits 0 when done; all others wait for it.
+
+  nginx:
+    build: ./nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ssl_certs:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_NAME=mycloud
+      - DB_USER=mycloud
+      # Secrets read from files by the backend at startup
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - MASTER_ENCRYPTION_KEY_FILE=/run/secrets/master_encryption_key
+      - STORAGE_PATH=/data/files
+      - ALLOWED_ORIGINS=https://localhost
+    volumes:
+      - file_storage:/data/files
+      - secrets:/run/secrets:ro
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=https://localhost
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      - MYSQL_ROOT_PASSWORD_FILE=/run/secrets/db_root_password
+      - MYSQL_DATABASE=mycloud
+      - MYSQL_USER=mycloud
+      - MYSQL_PASSWORD_FILE=/run/secrets/db_password
+    volumes:
+      - db_data:/var/lib/mysql
+      - secrets:/run/secrets:ro
+      - ./backend/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql
+      - ./backend/migrations/002_performance_indexes.sql:/docker-entrypoint-initdb.d/002_performance_indexes.sql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  file_storage:
+  db_data:
+  redis_data:
+  ssl_certs:
+  secrets:      # persisted across restarts — secrets never regenerate
