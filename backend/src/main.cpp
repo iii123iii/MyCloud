@@ -100,6 +100,7 @@ int main() {
                 if (path == "/api/auth/login")     return true;
                 if (path == "/api/auth/register")  return true;
                 if (path == "/api/auth/refresh")   return true;
+                if (path == "/api/auth/logout")    return true;
                 if (path.rfind("/api/s/", 0) == 0) return true;  // public shares
                 return false;
             };

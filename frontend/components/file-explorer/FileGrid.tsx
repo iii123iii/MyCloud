@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, FolderOpen, Upload } from "lucide-react";
+import { Star, Upload } from "lucide-react";
 import { FileIcon } from "./FileIcon";
 import { FileContextMenu } from "./FileContextMenu";
 import { formatBytes } from "@/lib/format";

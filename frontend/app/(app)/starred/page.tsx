@@ -12,17 +12,23 @@ const PAGE_SIZE = 50;
 
 export default function StarredPage() {
   const {
-    data, size, setSize, isValidating, mutate,
+    data, setSize, isValidating, mutate,
   } = useSWRInfinite(
     (i) => `starred-p${i}`,
     (key) => {
       const page = parseInt(key.split("-p").pop()!) + 1;
-      return filesApi.list({ sort: "updated_at", order: "desc", all: true, page, page_size: PAGE_SIZE });
+      return filesApi.list({
+        sort: "updated_at",
+        order: "desc",
+        all: true,
+        starred_only: true,
+        page,
+        page_size: PAGE_SIZE,
+      });
     },
   );
 
-  // Client-side filter for starred (backend doesn't have a starred-only filter yet)
-  const allFiles = data ? data.flatMap((d) => d.files).filter((f) => f.is_starred) : [];
+  const allFiles = data ? data.flatMap((d) => d.files) : [];
   const hasMore  = data ? data[data.length - 1]?.has_more ?? false : false;
   const loading  = !data && isValidating;
 

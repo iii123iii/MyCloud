@@ -548,7 +548,7 @@ export class SyncEngine {
   private async ensureRemoteFolder(
     root: Root,
     relativePath: string,
-  ): Promise<number | null> {
+  ): Promise<string | null> {
     if (!relativePath) return root.remoteRootId;
     const mappings = this.ensureMappings(root.id);
     const normalized = normalizeRelativePath(relativePath);
@@ -581,7 +581,7 @@ export class SyncEngine {
   private async syncFile(
     root: Root,
     relativePath: string,
-  ): Promise<number | null> {
+  ): Promise<string | null> {
     const normalized = normalizeRelativePath(relativePath);
     const fullPath = path.join(root.localPath, relativePath);
 

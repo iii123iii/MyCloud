@@ -14,7 +14,7 @@ import {
   SidebarMenuItem, SidebarSeparator,
 } from "@/components/ui/sidebar";
 import { Progress } from "@/components/ui/progress";
-import { auth as authApi, tokenStore } from "@/lib/api";
+import { auth as authApi } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { toast } from "sonner";
 

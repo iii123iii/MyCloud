@@ -130,13 +130,14 @@ export const auth = {
 export const files = {
   list: (params?: {
     folder_id?: string; sort?: string; order?: string;
-    all?: boolean; page?: number; page_size?: number;
+    all?: boolean; starred_only?: boolean; page?: number; page_size?: number;
   }) => {
     const q = new URLSearchParams();
     if (params?.folder_id) q.set("folder_id", params.folder_id);
     if (params?.sort)      q.set("sort",      params.sort);
     if (params?.order)     q.set("order",     params.order);
     if (params?.all)       q.set("all",       "1");
+    if (params?.starred_only) q.set("starred_only", "1");
     if (params?.page)      q.set("page",      String(params.page));
     if (params?.page_size) q.set("page_size", String(params.page_size));
     return request<PaginatedFiles>(`/api/files?${q}`);

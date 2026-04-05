@@ -3,7 +3,7 @@
 /* ------------------------------------------------------------------ */
 
 export interface User {
-  id: number;
+  id: string;
   username: string;
   email: string;
   role: string;
@@ -35,13 +35,13 @@ export interface Root {
   id: string;
   label: string;
   localPath: string;
-  remoteRootId: number | null;
+  remoteRootId: string | null;
   lastScanAt: string | null;
 }
 
 export interface MappingEntry {
   type: "file" | "folder";
-  remoteId: number;
+  remoteId: string;
   signature?: string;
 }
 
@@ -79,7 +79,7 @@ export interface WalkResult {
 }
 
 export interface RemoteEntity {
-  id: number;
+  id: string;
   [key: string]: unknown;
 }
 

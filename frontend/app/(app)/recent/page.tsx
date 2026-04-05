@@ -12,7 +12,7 @@ const PAGE_SIZE = 50;
 
 export default function RecentPage() {
   const {
-    data, size, setSize, isValidating, mutate,
+    data, setSize, isValidating, mutate,
   } = useSWRInfinite(
     (i) => `recent-p${i}`,
     (key) => {

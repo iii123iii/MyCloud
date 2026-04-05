@@ -203,7 +203,7 @@ export class ApiClient {
 
   async createFolder(
     name: string,
-    parentId: number | null = null,
+    parentId: string | null = null,
   ): Promise<RemoteEntity> {
     return (await this.request<RemoteEntity>("/api/folders", {
       method: "POST",
@@ -218,11 +218,13 @@ export class ApiClient {
 
   async uploadFile(
     filePath: string,
-    folderId: number | null,
+    folderId: string | null,
   ): Promise<RemoteEntity> {
     const fileName = path.basename(filePath);
-    const buffer = await fs.promises.readFile(filePath);
-    const blob = new Blob([buffer]);
+    const blob =
+      typeof fs.openAsBlob === "function"
+        ? await fs.openAsBlob(filePath)
+        : new Blob([await fs.promises.readFile(filePath)]);
 
     const form = new FormData();
     form.append("file", blob, fileName);
@@ -240,7 +242,7 @@ export class ApiClient {
    * Delete a remote file. Treats 404 as success — resource is already gone,
    * which is the desired end state.
    */
-  async deleteFile(id: number): Promise<void> {
+  async deleteFile(id: string): Promise<void> {
     try {
       await this.request(`/api/files/${id}`, { method: "DELETE" });
     } catch (error: unknown) {
@@ -253,7 +255,7 @@ export class ApiClient {
    * Delete a remote folder. Treats 404 as success — resource is already gone,
    * which is the desired end state.
    */
-  async deleteFolder(id: number): Promise<void> {
+  async deleteFolder(id: string): Promise<void> {
     try {
       await this.request(`/api/folders/${id}`, { method: "DELETE" });
     } catch (error: unknown) {

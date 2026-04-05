@@ -66,7 +66,6 @@ export function FileExplorer() {
   // ── Infinite scroll: paginated file loading ───────────────────────────
   const {
     data: filePages,
-    size: filePageCount,
     setSize: setFilePageCount,
     mutate: mutateFiles,
     isValidating: filesLoading,

@@ -64,6 +64,7 @@ public:
         std::string sort     = req->getParameter("sort");
         std::string order    = req->getParameter("order");
         bool        all      = req->getParameter("all") == "1";
+        bool        starredOnly = req->getParameter("starred_only") == "1";
         int page     = safeInt(req->getParameter("page"),      1, 1, 100000);
         int pageSize = safeInt(req->getParameter("page_size"), 50, 1, 200);
         int offset   = (page - 1) * pageSize;
@@ -78,6 +79,8 @@ public:
 
         // ── Build WHERE clause ────────────────────────────────────────
         std::string where = "WHERE user_id=? AND is_deleted=0";
+        if (starredOnly)
+            where += " AND is_starred=1";
         if (!all) {
             if (folderId.empty())
                 where += " AND folder_id IS NULL";

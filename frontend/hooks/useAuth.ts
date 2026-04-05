@@ -11,15 +11,15 @@ interface AuthState {
 }
 
 export function useAuth(): AuthState & { logout: () => Promise<void> } {
-  const [state, setState] = useState<AuthState>({ user: null, loading: true });
+  const [state, setState] = useState<AuthState>(() => ({
+    user: null,
+    loading: !!tokenStore.getAccess(),
+  }));
   const router = useRouter();
 
   useEffect(() => {
     const token = tokenStore.getAccess();
-    if (!token) {
-      setState({ user: null, loading: false });
-      return;
-    }
+    if (!token) return;
     auth.me()
       .then((user) => setState({ user, loading: false }))
       .catch(() => {

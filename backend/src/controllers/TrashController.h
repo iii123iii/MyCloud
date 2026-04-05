@@ -2,6 +2,7 @@
 #include <drogon/HttpController.h>
 #include "utils/ResponseUtils.h"
 #include "services/StorageService.h"
+#include <vector>
 
 class TrashController : public drogon::HttpController<TrashController> {
 public:
@@ -70,20 +71,44 @@ public:
                     cb(utils::okJson(ok));
                     return;
                 }
-                db->execSqlAsync(
-                    "UPDATE folders SET is_deleted=0, deleted_at=NULL WHERE id=? AND user_id=?",
-                    [cb](const drogon::orm::Result& r2) {
-                        if (r2.affectedRows() == 0)
-                            cb(utils::errorJson(drogon::k404NotFound, "Item not found in trash"));
-                        else {
-                            Json::Value ok; ok["message"] = "Restored";
-                            cb(utils::okJson(ok));
-                        }
-                    },
-                    [cb](const drogon::orm::DrogonDbException& e) {
-                        cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
-                    },
-                    id, userId);
+                try {
+                    auto folderCheck = db->execSqlSync(
+                        "SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1",
+                        id, userId);
+                    if (folderCheck.empty()) {
+                        cb(utils::errorJson(drogon::k404NotFound, "Item not found in trash"));
+                        return;
+                    }
+
+                    db->execSqlSync(
+                        "WITH RECURSIVE folder_tree AS ("
+                        " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1"
+                        " UNION ALL "
+                        " SELECT f.id FROM folders f "
+                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                        " WHERE f.user_id=? AND f.is_deleted=1"
+                        ") "
+                        "UPDATE folders SET is_deleted=0, deleted_at=NULL "
+                        "WHERE id IN (SELECT id FROM folder_tree)",
+                        id, userId, userId);
+
+                    db->execSqlSync(
+                        "WITH RECURSIVE folder_tree AS ("
+                        " SELECT id FROM folders WHERE id=? AND user_id=?"
+                        " UNION ALL "
+                        " SELECT f.id FROM folders f "
+                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                        " WHERE f.user_id=?"
+                        ") "
+                        "UPDATE files SET is_deleted=0, deleted_at=NULL "
+                        "WHERE user_id=? AND is_deleted=1 AND folder_id IN (SELECT id FROM folder_tree)",
+                        id, userId, userId, userId);
+
+                    Json::Value ok; ok["message"] = "Restored";
+                    cb(utils::okJson(ok));
+                } catch (const drogon::orm::DrogonDbException& e) {
+                    cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                }
             },
             [cb](const drogon::orm::DrogonDbException& e) {
                 cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
@@ -121,18 +146,65 @@ public:
                     return;
                 }
                 // Try folder
-                db->execSqlAsync(
-                    "DELETE FROM folders WHERE id=? AND user_id=? AND is_deleted=1",
-                    [cb](const drogon::orm::Result& r2) {
-                        if (r2.affectedRows() == 0)
-                            cb(utils::errorJson(drogon::k404NotFound, "Item not found in trash"));
-                        else
-                            cb(utils::noContent());
-                    },
-                    [cb](const drogon::orm::DrogonDbException& e) {
-                        cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
-                    },
-                    id, userId);
+                try {
+                    auto folderCheck = db->execSqlSync(
+                        "SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1",
+                        id, userId);
+                    if (folderCheck.empty()) {
+                        cb(utils::errorJson(drogon::k404NotFound, "Item not found in trash"));
+                        return;
+                    }
+
+                    auto filesInTree = db->execSqlSync(
+                        "WITH RECURSIVE folder_tree AS ("
+                        " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1"
+                        " UNION ALL "
+                        " SELECT f.id FROM folders f "
+                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                        " WHERE f.user_id=? AND f.is_deleted=1"
+                        ") "
+                        "SELECT id,size_bytes FROM files "
+                        "WHERE user_id=? AND is_deleted=1 AND folder_id IN (SELECT id FROM folder_tree)",
+                        id, userId, userId, userId);
+
+                    long long totalSize = 0;
+                    for (const auto& row : filesInTree) {
+                        std::string fileId = row["id"].as<std::string>();
+                        services::StorageService::deleteFile(userId, fileId);
+                        totalSize += row["size_bytes"].as<long long>();
+                    }
+
+                    db->execSqlSync(
+                        "WITH RECURSIVE folder_tree AS ("
+                        " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1"
+                        " UNION ALL "
+                        " SELECT f.id FROM folders f "
+                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                        " WHERE f.user_id=? AND f.is_deleted=1"
+                        ") "
+                        "DELETE FROM files "
+                        "WHERE user_id=? AND is_deleted=1 AND folder_id IN (SELECT id FROM folder_tree)",
+                        id, userId, userId, userId);
+
+                    db->execSqlSync(
+                        "WITH RECURSIVE folder_tree AS ("
+                        " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=1"
+                        " UNION ALL "
+                        " SELECT f.id FROM folders f "
+                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                        " WHERE f.user_id=? AND f.is_deleted=1"
+                        ") "
+                        "DELETE FROM folders WHERE id IN (SELECT id FROM folder_tree)",
+                        id, userId, userId);
+
+                    db->execSqlSync(
+                        "UPDATE users SET used_bytes=GREATEST(0, used_bytes-?) WHERE id=?",
+                        totalSize, userId);
+
+                    cb(utils::noContent());
+                } catch (const drogon::orm::DrogonDbException& e) {
+                    cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                }
             },
             [cb](const drogon::orm::DrogonDbException& e) {
                 cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
