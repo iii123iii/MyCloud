@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MyCloud Sync</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">M</div>
+          <div>
+            <h1>MyCloud Sync</h1>
+            <p id="topbar-subtitle">Not connected</p>
+          </div>
+        </div>
+        <button id="settings-toggle" class="icon-button" type="button" aria-label="Toggle settings">+</button>
+      </header>
+
+      <section class="content">
+        <div class="hero-card">
+          <div class="hero-illustration" aria-hidden="true">
+            <div class="screen"></div>
+            <div class="phone"></div>
+            <div class="sync-ring"></div>
+          </div>
+          <h2 id="hero-title">Sign in to start syncing</h2>
+          <p id="hero-text">Connect the desktop app to your MyCloud account and keep selected folders synced in the background.</p>
+          <button id="primary-cta" class="primary-button" type="button">Sign in</button>
+        </div>
+
+        <section id="settings-panel" class="settings-panel is-hidden">
+          <div id="logged-out-view" class="settings-view">
+            <div class="settings-header">
+              <div>
+                <p class="settings-eyebrow">Account</p>
+                <h3>Sign in to MyCloud</h3>
+              </div>
+              <p class="settings-copy">Connect this desktop app to your server before adding folders.</p>
+            </div>
+            <form id="login-form" class="settings-form">
+              <label>
+                <span>API URL</span>
+                <input id="apiBaseUrl" name="apiBaseUrl" placeholder="http://localhost:8080" required />
+              </label>
+              <label>
+                <span>Email or Username</span>
+                <input id="email" name="email" placeholder="name@example.com" required />
+              </label>
+              <label>
+                <span>Password</span>
+                <input id="password" name="password" type="password" required />
+              </label>
+              <label class="checkbox-row">
+                <input id="allowSelfSignedTls" name="allowSelfSignedTls" type="checkbox" />
+                <span>Allow self-signed HTTPS certificate</span>
+              </label>
+              <div class="settings-actions">
+                <button type="submit" class="primary-button small">Sign In</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="logged-in-view" class="settings-view is-hidden">
+            <div class="settings-header">
+              <div>
+                <p class="settings-eyebrow">Account</p>
+                <h3>Connected</h3>
+              </div>
+              <p class="settings-copy">Your desktop app is signed in and can keep folders synced in the background.</p>
+            </div>
+            <section class="account-card" aria-live="polite">
+              <div class="account-badge">
+                <span class="account-dot"></span>
+                <span>Signed in</span>
+              </div>
+              <p id="account-username" class="account-name">-</p>
+              <p id="account-email" class="account-meta">-</p>
+              <p id="account-api-url" class="account-meta">-</p>
+            </section>
+            <div class="settings-actions settings-actions-spread">
+              <button type="button" id="logout-btn" class="secondary-button small danger-button">Sign Out</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="status-strip">
+          <div class="status-pill">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-label">Idle</span>
+          </div>
+          <p id="status-text">No folders selected.</p>
+        </section>
+
+        <!-- Sync progress bar -->
+        <section id="progress-section" class="progress-section is-hidden">
+          <div class="progress-header">
+            <span id="progress-label">Syncing...</span>
+            <span id="progress-count">0 / 0</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+          </div>
+          <p id="progress-file" class="progress-file"></p>
+        </section>
+
+        <section class="folder-section">
+          <div class="section-row">
+            <h3>Folders</h3>
+            <button id="pick-folder-btn" class="secondary-button small" type="button">Add folder</button>
+          </div>
+          <div id="folders-list" class="folder-list"></div>
+        </section>
+      </section>
+
+      <footer class="footer-nav">
+        <button id="sync-now-btn" class="footer-action" type="button">
+          <span>Sync now</span>
+        </button>
+        <button id="open-folder-btn" class="footer-action" type="button" disabled>
+          <span>Open folder</span>
+        </button>
+        <button id="view-online-btn" class="footer-action" type="button" disabled>
+          <span>View online</span>
+        </button>
+      </footer>
+    </main>
+
+    <template id="folder-template">
+      <article class="folder-item">
+        <div class="folder-copy">
+          <h4 class="folder-title"></h4>
+          <p class="folder-path"></p>
+        </div>
+        <button class="remove-folder-btn" type="button">Remove</button>
+      </article>
+    </template>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

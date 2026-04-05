@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 SSL_DIR="/etc/nginx/ssl"

@@ -5,13 +5,13 @@ DIR="/run/secrets"
 mkdir -p "$DIR"
 
 gen() {
-  local file="$DIR/$1"
-  local bytes="$2"
+  file="$DIR/$1"
+  bytes="$2"
   if [ ! -f "$file" ] || [ ! -s "$file" ]; then
     openssl rand -hex "$bytes" > "$file"
     echo "[init] Generated $1"
   else
-    echo "[init] $1 already exists — skipping"
+    echo "[init] $1 already exists - skipping"
   fi
 }
 

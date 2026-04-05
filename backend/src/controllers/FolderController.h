@@ -37,6 +37,8 @@ public:
                 f["id"]         = row["id"].as<std::string>();
                 f["name"]       = row["name"].as<std::string>();
                 f["created_at"] = row["created_at"].as<std::string>();
+                if (!row["updated_at"].isNull())
+                    f["updated_at"] = row["updated_at"].as<std::string>();
                 if (!row["parent_id"].isNull())
                     f["parent_id"] = row["parent_id"].as<std::string>();
                 arr.append(f);

@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# TypeScript
+build/
+*.js.map
+*.d.ts
+
+# Electron
+dist/
+*.exe
+*.dmg
+*.AppImage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

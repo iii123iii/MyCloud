@@ -1,36 +1,117 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MyCloud Frontend
 
-## Getting Started
+The frontend is the web UI for MyCloud. It is built with Next.js App Router and talks to the backend API for auth, file browsing, shares, trash, admin pages, and account settings.
 
-First, run the development server:
+## Tech stack
+
+- Next.js 16
+- React 19
+- TypeScript
+- SWR and `useSWRInfinite`
+- Tailwind CSS 4
+- shadcn/ui-style component primitives
+
+## App areas
+
+Routes currently present in `app/`:
+
+- `/login`
+- `/register`
+- `/setup`
+- `/dashboard`
+- `/recent`
+- `/starred`
+- `/shared`
+- `/trash`
+- `/settings`
+- `/admin`
+- `/s/[token]`
+
+## Local development
+
+Install dependencies and start the dev server:
 
 ```bash
+cd frontend
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment
 
-## Learn More
+The frontend uses:
 
-To learn more about Next.js, take a look at the following resources:
+- `NEXT_PUBLIC_API_URL`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Example:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8080
+```
 
-## Deploy on Vercel
+In the Docker stack, it is set to `https://localhost` because nginx fronts the API.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Build and run
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Production build:
+
+```bash
+cd frontend
+npm run build
+npm run start
+```
+
+Available scripts from [package.json](/C:/Users/omrio/Desktop/Projects/mycloud/frontend/package.json):
+
+- `npm run dev`
+- `npm run build`
+- `npm run start`
+- `npm run lint`
+
+## Docker
+
+The frontend Docker image is a multi-stage build that outputs a standalone Next.js server.
+
+Run it as part of the full stack:
+
+```bash
+docker compose up --build frontend backend nginx
+```
+
+Or run the full repo stack:
+
+```bash
+docker compose up --build
+```
+
+## Important directories
+
+```text
+frontend/
+├─ app/         Route segments and pages
+├─ components/  Explorer UI, sidebar, modals, shared UI primitives
+├─ hooks/       Client hooks
+├─ lib/         API client and shared types
+└─ public/      Static assets
+```
+
+## File explorer behavior
+
+The dashboard explorer:
+
+- loads folders and files from the backend
+- supports pagination and incremental loading
+- supports upload by file picker and drag-and-drop
+- supports preview, rename, move, share, and delete flows through modals and context menus
+
+## Notes
+
+- auth tokens are stored client-side for API calls
+- the frontend expects the backend to be reachable from the browser
+- image remote patterns are intentionally empty in [next.config.ts](/C:/Users/omrio/Desktop/Projects/mycloud/frontend/next.config.ts)

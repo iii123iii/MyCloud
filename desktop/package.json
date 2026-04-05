@@ -1,0 +1,41 @@
+{
+  "name": "mycloud-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "author": "MyCloud",
+  "description": "Background sync desktop client for MyCloud",
+  "main": "build/main.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "dev": "tsc && electron .",
+    "start": "electron .",
+    "dist": "tsc && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.mycloud.desktop",
+    "productName": "MyCloud Sync",
+    "files": [
+      "build/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    }
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.3"
+  }
+}

@@ -32,6 +32,7 @@ export function FileExplorer() {
   const [searchQ, setSearchQ]         = useState("");
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [isLoadMoreVisible, setIsLoadMoreVisible] = useState(false);
 
   // ── Restore state from URL on first mount ─────────────────────────────
   useEffect(() => {
@@ -70,25 +71,38 @@ export function FileExplorer() {
     mutate: mutateFiles,
     isValidating: filesLoading,
   } = useSWRInfinite(
-    (pageIndex) => `files-${folderId ?? "root"}-p${pageIndex}`,
-    (key) => {
-      const pageIndex = parseInt(key.split("-p").pop()!);
+    (pageIndex, previousPageData) => {
+      if (previousPageData && !previousPageData.has_more) return null;
+      return ["files", folderId ?? "root", pageIndex + 1, PAGE_SIZE] as const;
+    },
+    ([, currentFolderId, page]) => {
       return filesApi.list({
-        folder_id: folderId,
-        page: pageIndex + 1,
+        folder_id: currentFolderId === "root" ? undefined : currentFolderId,
+        page,
         page_size: PAGE_SIZE,
       });
     },
-    { revalidateFirstPage: true }
+    {
+      revalidateFirstPage: true,
+      persistSize: false,
+      parallel: false,
+    }
   );
 
   const { data: foldersData, mutate: mutateFolders } = useSWR(
     `folders-${folderId ?? "root"}`,
-    () => foldersApi.list(folderId)
+    () => foldersApi.list(folderId),
+    { refreshInterval: 10_000 } // poll every 10 s so desktop-synced folders appear automatically
   );
 
-  const allFiles    = filePages ? filePages.flatMap((p) => p.files) : [];
-  const hasMore     = filePages ? filePages[filePages.length - 1]?.has_more ?? false : false;
+  const allFiles = filePages
+    ? Array.from(
+        new Map(filePages.flatMap((p) => p.files).map((file) => [file.id, file])).values(),
+      )
+    : [];
+  const hasMore = filePages
+    ? (filePages[filePages.length - 1]?.has_more ?? false) || allFiles.length < (filePages[0]?.total ?? 0)
+    : false;
   const totalFiles  = filePages?.[0]?.total ?? 0;
   const folderList  = foldersData?.folders ?? [];
 
@@ -97,17 +111,27 @@ export function FileExplorer() {
   // ── Infinite scroll trigger ───────────────────────────────────────────
   const loadMoreRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!loadMoreRef.current || !hasMore) return;
+    if (!loadMoreRef.current) return;
     const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting && hasMore && !filesLoading) setFilePageCount((s) => s + 1); },
+      ([entry]) => {
+        setIsLoadMoreVisible(entry.isIntersecting);
+      },
       { rootMargin: "200px" }
     );
     observer.observe(loadMoreRef.current);
     return () => observer.disconnect();
-  }, [hasMore, filesLoading, setFilePageCount]);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoadMoreVisible || !hasMore || filesLoading) return;
+    setFilePageCount((size) => size + 1);
+  }, [filesLoading, hasMore, isLoadMoreVisible, setFilePageCount]);
 
   // Reset pagination when folder changes
-  useEffect(() => { setFilePageCount(1); }, [folderId, setFilePageCount]);
+  useEffect(() => {
+    setIsLoadMoreVisible(false);
+    setFilePageCount(1);
+  }, [folderId, setFilePageCount]);
 
   // ── Drag-and-drop upload ──────────────────────────────────────────────
   const onDrop = useCallback(async (accepted: File[]) => {

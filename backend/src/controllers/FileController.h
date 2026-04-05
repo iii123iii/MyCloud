@@ -201,12 +201,18 @@ public:
                     userId, fileId, fileBytes.data(), fileBytes.size());
 
                 std::string storagePath = services::StorageService::filePath(userId, fileId);
-                auto insertCb = [cb, db, userId, size](const drogon::orm::Result&) {
+                auto insertCb = [cb, db, userId, size, fileId, filename, folderId](const drogon::orm::Result&) {
                     db->execSqlAsync(
                         "UPDATE users SET used_bytes=used_bytes+? WHERE id=?",
-                        [cb](const drogon::orm::Result&) {
+                        [cb, fileId, filename, folderId](const drogon::orm::Result&) {
                             Json::Value ok;
                             ok["message"] = "File uploaded";
+                            ok["id"] = fileId;
+                            ok["name"] = filename;
+                            if (folderId.empty())
+                                ok["folder_id"] = Json::nullValue;
+                            else
+                                ok["folder_id"] = folderId;
                             cb(utils::createdJson(ok));
                         },
                         [cb](const drogon::orm::DrogonDbException& e) {
