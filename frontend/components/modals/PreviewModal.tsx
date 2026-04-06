@@ -73,7 +73,7 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl w-full max-h-[90vh] flex flex-col p-0 gap-0">
+      <DialogContent showCloseButton={false} className="max-w-5xl w-full max-h-[90vh] flex flex-col p-0 gap-0">
         <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0">
           <DialogTitle className="text-base font-medium truncate pr-4">{file.name}</DialogTitle>
           <div className="flex items-center gap-2 shrink-0">
