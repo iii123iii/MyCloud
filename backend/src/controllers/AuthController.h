@@ -5,6 +5,7 @@
 #include "utils/JwtUtils.h"
 #include "utils/HashUtils.h"
 #include "services/AuthService.h"
+#include "services/UserDeletionService.h"
 #include <cstdlib>
 
 class AuthController : public drogon::HttpController<AuthController> {
@@ -16,6 +17,7 @@ public:
         ADD_METHOD_TO(AuthController::logout,         "/api/auth/logout",          drogon::Post);
         ADD_METHOD_TO(AuthController::me,             "/api/auth/me",              drogon::Get);
         ADD_METHOD_TO(AuthController::changePassword, "/api/auth/change-password", drogon::Post);
+        ADD_METHOD_TO(AuthController::deleteAccount,  "/api/auth/delete-account",  drogon::Delete);
     METHOD_LIST_END
 
     // POST /api/auth/login
@@ -261,6 +263,44 @@ public:
                         cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
                     },
                     hash, userId);
+            },
+            [cb](const drogon::orm::DrogonDbException& e) {
+                cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+            },
+            userId);
+    }
+
+    void deleteAccount(const drogon::HttpRequestPtr& req,
+                       std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        std::string userId = req->getAttributes()->get<std::string>("userId");
+        auto body = req->getJsonObject();
+        if (!body) { cb(utils::errorJson(drogon::k400BadRequest, "Invalid JSON")); return; }
+
+        std::string password = (*body)["password"].asString();
+        if (password.empty()) {
+            cb(utils::errorJson(drogon::k400BadRequest, "Current password required"));
+            return;
+        }
+
+        auto db = drogon::app().getDbClient();
+        db->execSqlAsync(
+            "SELECT password_hash FROM users WHERE id=?",
+            [cb, db, userId, password](const drogon::orm::Result& r) {
+                if (r.empty()) {
+                    cb(utils::errorJson(drogon::k404NotFound, "User not found"));
+                    return;
+                }
+                if (!utils::verifyPassword(password, r[0]["password_hash"].as<std::string>())) {
+                    cb(utils::errorJson(drogon::k401Unauthorized, "Current password is incorrect"));
+                    return;
+                }
+
+                services::UserDeletionService::deleteUser(
+                    userId,
+                    [cb]() { cb(utils::noContent()); },
+                    [cb](drogon::HttpStatusCode status, const std::string& message) {
+                        cb(utils::errorJson(status, message));
+                    });
             },
             [cb](const drogon::orm::DrogonDbException& e) {
                 cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));

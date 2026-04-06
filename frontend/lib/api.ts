@@ -124,6 +124,11 @@ export const auth = {
     request<{ message: string }>("/api/auth/change-password", {
       method: "POST", body: JSON.stringify(data),
     }),
+
+  deleteAccount: (data: { password: string }) =>
+    request<void>("/api/auth/delete-account", {
+      method: "DELETE", body: JSON.stringify(data),
+    }),
 };
 
 // ─── Files ────────────────────────────────────────────────────────────────────

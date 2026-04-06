@@ -44,7 +44,7 @@ export function UserTable({ users, onMutate }: Props) {
   };
 
   const deleteUser = async (user: User) => {
-    if (!confirm(`Delete user "${user.username}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete user "${user.username}" and permanently remove all of their files and folders? This cannot be undone.`)) return;
     try {
       await adminApi.deleteUser(user.id);
       onMutate();

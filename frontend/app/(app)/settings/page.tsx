@@ -1,19 +1,21 @@
 "use client";
 
 import useSWR from "swr";
+import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Settings, User2 } from "lucide-react";
+import { AlertTriangle, Settings, User2 } from "lucide-react";
 
-import { auth as authApi } from "@/lib/api";
+import { auth as authApi, tokenStore } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { formatBytes } from "@/lib/format";
 
 const pwSchema = z.object({
@@ -26,11 +28,29 @@ const pwSchema = z.object({
 });
 type PwForm = z.infer<typeof pwSchema>;
 
+const deleteSchema = z.object({
+  password: z.string().min(1, "Current password required"),
+  confirm: z.string().refine((value) => value === "DELETE", {
+    message: 'Type DELETE to confirm',
+  }),
+});
+type DeleteForm = {
+  password: string;
+  confirm: string;
+};
+
 export default function SettingsPage() {
+  const router = useRouter();
   const { data: user } = useSWR("me", authApi.me);
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<PwForm>({
     resolver: zodResolver(pwSchema),
   });
+  const {
+    register: registerDelete,
+    handleSubmit: handleDeleteSubmit,
+    reset: resetDelete,
+    formState: { errors: deleteErrors, isSubmitting: isDeleting },
+  } = useForm<DeleteForm>({ resolver: zodResolver(deleteSchema) });
 
   const onPasswordChange = async (data: PwForm) => {
     try {
@@ -39,6 +59,18 @@ export default function SettingsPage() {
       reset();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to change password");
+    }
+  };
+
+  const onDeleteAccount = async (data: DeleteForm) => {
+    try {
+      await authApi.deleteAccount({ password: data.password });
+      tokenStore.clear();
+      resetDelete();
+      toast.success("Account deleted");
+      router.replace("/login");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete account");
     }
   };
 
@@ -115,6 +147,40 @@ export default function SettingsPage() {
             </div>
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? "Saving…" : "Update password"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle className="text-destructive">Delete account</CardTitle>
+          <CardDescription>
+            Permanently remove your account and delete all of your files and folders.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>This action cannot be undone</AlertTitle>
+            <AlertDescription>
+              Your account, stored files, folders, shares, and trash will be permanently deleted.
+            </AlertDescription>
+          </Alert>
+
+          <form onSubmit={handleDeleteSubmit(onDeleteAccount)} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="delete_password">Current password</Label>
+              <Input id="delete_password" type="password" {...registerDelete("password")} />
+              {deleteErrors.password && <p className="text-xs text-destructive">{deleteErrors.password.message}</p>}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="delete_confirm">Type DELETE to confirm</Label>
+              <Input id="delete_confirm" autoComplete="off" {...registerDelete("confirm")} />
+              {deleteErrors.confirm && <p className="text-xs text-destructive">{deleteErrors.confirm.message}</p>}
+            </div>
+            <Button type="submit" variant="destructive" disabled={isDeleting}>
+              {isDeleting ? "Deleting account..." : "Delete account"}
             </Button>
           </form>
         </CardContent>

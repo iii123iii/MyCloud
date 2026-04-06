@@ -3,6 +3,7 @@
 #include "utils/ResponseUtils.h"
 #include "utils/UuidUtils.h"
 #include "utils/HashUtils.h"
+#include "services/UserDeletionService.h"
 
 class AdminController : public drogon::HttpController<AdminController> {
 public:
@@ -153,12 +154,12 @@ public:
             cb(utils::errorJson(drogon::k400BadRequest, "Cannot delete your own account"));
             return;
         }
-        auto db = drogon::app().getDbClient();
-        db->execSqlAsync("DELETE FROM users WHERE id=?",
-            [cb](const drogon::orm::Result&) { cb(utils::noContent()); },
-            [cb](const drogon::orm::DrogonDbException& e) {
-                cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
-            }, id);
+        services::UserDeletionService::deleteUser(
+            id,
+            [cb]() { cb(utils::noContent()); },
+            [cb](drogon::HttpStatusCode status, const std::string& message) {
+                cb(utils::errorJson(status, message));
+            });
     }
 
     void getStats(const drogon::HttpRequestPtr& req,
