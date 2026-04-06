@@ -22,19 +22,24 @@ services:
   backend:
     build: ./backend
     environment:
-      - DB_HOST=mariadb
-      - DB_PORT=3306
-      - DB_NAME=mycloud
-      - DB_USER=mycloud
-      # Secrets read from files by the backend at startup
-      - DB_PASSWORD_FILE=/run/secrets/db_password
-      - JWT_SECRET_FILE=/run/secrets/jwt_secret
-      - MASTER_ENCRYPTION_KEY_FILE=/run/secrets/master_encryption_key
-      - STORAGE_PATH=/data/files
-      - ALLOWED_ORIGINS=https://localhost
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: mycloud
+      DB_USER: mycloud
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      MASTER_ENCRYPTION_KEY_FILE: /run/secrets/master_encryption_key
+      STORAGE_PATH: /data/files
+      ALLOWED_ORIGINS: https://localhost
+      MYCLOUD_UPDATE_COMMAND: "${MYCLOUD_UPDATE_COMMAND:-cd /opt/mycloud && sh ./scripts/apply-update.sh}"
+      MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/tmp/mycloud-update.log}
+      MYCLOUD_PROJECT_DIR: /opt/mycloud
+      MYCLOUD_UPDATE_SERVICES: "${MYCLOUD_UPDATE_SERVICES:-backend frontend nginx}"
     volumes:
       - file_storage:/data/files
       - secrets:/run/secrets:ro
+      - ./:/opt/mycloud
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       init:
         condition: service_completed_successfully

@@ -89,6 +89,86 @@ In practice:
 - run the frontend if you are working on the web UI
 - run the desktop app if you are working on sync UX or file watching
 
+## Versioning and updates
+
+MyCloud uses a single hardcoded version string in the C++ backend. Every release requires bumping it before building.
+
+### How to release a new version
+
+1. **Edit `backend/src/utils/Version.h`** and change `MYCLOUD_VERSION` to the new tag:
+   ```cpp
+   #define MYCLOUD_VERSION "v1.1.0"
+   ```
+   The value must exactly match the GitHub release tag you will create (including the leading `v`).
+
+2. **Commit and push the code:**
+   ```bash
+   git add .
+   git commit -am "chore: bump version to v1.1.0"
+   git push origin main
+   ```
+
+3. **Create a GitHub release** at `https://github.com/iii123iii/MyCloud/releases/new` tagged exactly `v1.1.0`. Add release notes â€” they appear in the admin update panel.
+
+4. **Create a GitHub release** at `https://github.com/iii123iii/MyCloud/releases/new` tagged exactly `v1.1.0`. Add release notes — they appear in the admin update panel.
+
+5. **Deploy:**
+   - If using Watchtower, it will pick up the new image automatically within the configured interval.
+   - If you have explicitly enabled admin apply support: go to **Admin → Updates**, click
+     **Check for updates**, then **Update to v1.1.0**.
+
+### Admin panel one-click updates
+
+The backend exposes two admin-only endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/admin/updates/check` | Compare running version against latest GitHub release |
+| `POST /api/admin/updates/apply` | Pull the latest git checkout and rebuild the app |
+
+### How one-click apply works
+
+The default `docker-compose.yml` now enables one-click apply for the standard repo-based deployment.
+
+When an admin clicks **Apply update**, the backend runs this flow:
+
+```bash
+cd /opt/mycloud
+git pull --ff-only
+docker compose up -d --build backend frontend nginx
+```
+
+This works because the backend container now has:
+
+- the repo checkout mounted at `/opt/mycloud`
+- the host Docker socket mounted at `/var/run/docker.sock`
+- `git`, `docker`, and `docker compose` installed in the backend image
+
+### Deployment requirements
+
+For the button to work reliably, deploy the app as a real git checkout of this repository on the
+server. The update command modifies that checkout in place.
+
+If the server directory is not a git clone, or if the working tree has local uncommitted changes,
+the apply step will fail and the running containers will stay on the current version.
+
+### Manual host update
+
+You can still update manually with the same flow:
+
+```bash
+git pull --ff-only
+docker compose up -d --build backend frontend nginx
+```
+
+### Optional overrides
+
+`docker-compose.yml` still exposes these knobs if you want to customize the apply flow:
+
+- `MYCLOUD_UPDATE_COMMAND`
+- `MYCLOUD_UPDATE_LOG_PATH`
+- `MYCLOUD_UPDATE_SERVICES`
+
 ## Development notes
 
 - backend: C++26, Drogon, OpenSSL, MariaDB, hiredis

@@ -14,6 +14,7 @@
 #include "controllers/TrashController.h"
 #include "controllers/SearchController.h"
 #include "controllers/AdminController.h"
+#include "controllers/UpdateController.h"
 
 #include "utils/JwtUtils.h"
 #include "utils/ResponseUtils.h"

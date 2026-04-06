@@ -88,6 +88,24 @@ export interface PaginatedFiles {
   has_more: boolean;
 }
 
+// ─── Updates ─────────────────────────────────────────────────────────────────
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  release_url: string;
+  release_name: string;
+  published_at: string;
+  release_notes: string;
+  apply_supported: boolean;
+  apply_message: string;
+  update_in_progress: boolean;
+  update_status: "idle" | "running" | "failed" | "succeeded";
+  update_status_message: string;
+  update_log_path: string;
+  last_started_target: string;
+}
+
 // ─── Admin ───────────────────────────────────────────────────────────────────
 export interface AdminStats {
   total_users: number;

@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatsCards } from "@/components/admin/StatsCards";
 import { UserTable } from "@/components/admin/UserTable";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
+import { UpdateChecker } from "@/components/admin/UpdateChecker";
 import { Shield } from "lucide-react";
 
 export default function AdminPage() {
@@ -26,6 +27,7 @@ export default function AdminPage() {
         <TabsList>
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="logs">Activity log</TabsTrigger>
+          <TabsTrigger value="updates">Updates</TabsTrigger>
         </TabsList>
         <TabsContent value="users" className="mt-4">
           <UserTable
@@ -35,6 +37,9 @@ export default function AdminPage() {
         </TabsContent>
         <TabsContent value="logs" className="mt-4">
           <ActivityLogTable logs={logsData?.logs ?? []} />
+        </TabsContent>
+        <TabsContent value="updates" className="mt-4">
+          <UpdateChecker />
         </TabsContent>
       </Tabs>
     </div>

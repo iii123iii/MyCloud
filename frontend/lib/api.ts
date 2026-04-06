@@ -1,6 +1,6 @@
 import type {
   AuthTokens, User, FileItem, FolderItem, PaginatedFiles,
-  Share, TrashItem, SearchResult, AdminStats, ActivityLog,
+  Share, TrashItem, SearchResult, AdminStats, ActivityLog, UpdateInfo,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -250,4 +250,6 @@ export const admin = {
   getSettings:   () => request<Record<string, string>>("/api/admin/settings"),
   putSettings:   (data: Record<string, string>) =>
     request<{ message: string }>("/api/admin/settings", { method: "PUT", body: JSON.stringify(data) }),
+  checkUpdate:   () => request<UpdateInfo>("/api/admin/updates/check"),
+  applyUpdate:   () => request<{ message: string }>("/api/admin/updates/apply", { method: "POST" }),
 };

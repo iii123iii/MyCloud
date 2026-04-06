@@ -60,6 +60,9 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
+    git \
+    docker.io \
+    docker-compose-v2 \
     libssl3 \
     libmariadb3 \
     libhiredis1.1.0 \

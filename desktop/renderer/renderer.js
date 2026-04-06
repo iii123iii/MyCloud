@@ -74,7 +74,7 @@ function showView(view) {
   els.settingsBtn.classList.toggle("active", inSettings);
   els.settingsGearIcon.classList.toggle("is-hidden", inSettings);
   els.settingsCloseIcon.classList.toggle("is-hidden", !inSettings);
-  els.settingsLabel.textContent = inSettings ? "Done" : "Settings";
+  els.settingsLabel.textContent = "Settings";
 }
 
 /* ------------------------------------------------------------------ */
