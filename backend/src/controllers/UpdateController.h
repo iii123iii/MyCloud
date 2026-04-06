@@ -146,7 +146,8 @@ public:
                 if (!launchError.empty()) {
                     updateInProgress_.store(false);
                     setState("failed", launchError, applyConfig.logPath, release.latest, false);
-                    cb(utils::errorJson(drogon::k500InternalServerError, launchError));
+                    (*responseCb)(
+                        utils::errorJson(drogon::k500InternalServerError, launchError));
                     return;
                 }
 
