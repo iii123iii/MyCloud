@@ -57,9 +57,12 @@ int main() {
     // IMPORTANT: connectionNumber is per IO thread, not total.
     // setThreadNum(0) spawns hardware_concurrency() threads, so:
     //   total DB connections = connectionNumber × thread_count
-    // We target ~80 total, staying well under MariaDB's max_connections (200).
-    // This auto-scales: 8 cores → 10/thread, 16 cores → 5/thread, etc.
-    mysqlCfg.connectionNumber = std::max(2u, 80u / std::max(1u, std::thread::hardware_concurrency()));
+    // We target ~30 total, well under MariaDB's max_connections (200).
+    // Floor is 1 (not 2) so high-core-count machines don't accidentally
+    // open hundreds of connections and breach the server limit on restart.
+    // MariaDB's wait_timeout=30s ensures dead connections from a crashed
+    // previous instance are reclaimed quickly, preventing accumulation.
+    mysqlCfg.connectionNumber = std::max(1u, 30u / std::max(1u, std::thread::hardware_concurrency()));
     mysqlCfg.characterSet  = "utf8mb4";
     mysqlCfg.timeout       = 60.0;
     mysqlCfg.name          = "default";
