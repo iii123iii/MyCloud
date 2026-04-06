@@ -32,11 +32,12 @@ services:
       STORAGE_PATH: /data/files
       ALLOWED_ORIGINS: https://localhost
       MYCLOUD_UPDATE_COMMAND: "${MYCLOUD_UPDATE_COMMAND:-cd /opt/mycloud && sh ./scripts/apply-update.sh}"
-      MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/tmp/mycloud-update.log}
+      MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/data/logs/update.log}
       MYCLOUD_PROJECT_DIR: /opt/mycloud
       MYCLOUD_UPDATE_SERVICES: "${MYCLOUD_UPDATE_SERVICES:-backend frontend nginx}"
     volumes:
       - file_storage:/data/files
+      - logs:/data/logs
       - secrets:/run/secrets:ro
       - ./:/opt/mycloud
       - /var/run/docker.sock:/var/run/docker.sock
@@ -92,3 +93,4 @@ volumes:
   redis_data:
   ssl_certs:
   secrets:      # persisted across restarts — secrets never regenerate
+  logs:         # persisted update logs — survives container restarts and reboots

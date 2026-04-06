@@ -183,6 +183,27 @@ private:
         return (value && value[0] != '\0') ? std::string(value) : std::string(fallback);
     }
 
+    // Returns true only for absolute paths confined to safe directories,
+    // with no path-traversal components.
+    static bool isValidLogPath(const std::string& path) {
+        if (path.empty() || path[0] != '/') {
+            return false;
+        }
+        // Reject any path traversal segment.
+        if (path.find("..") != std::string::npos) {
+            return false;
+        }
+        // Must be under one of the known-safe directories.
+        const std::string allowedPrefixes[] = {"/tmp/", "/data/"};
+        for (const auto& prefix : allowedPrefixes) {
+            if (path.size() > prefix.size() &&
+                path.compare(0, prefix.size(), prefix) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static void setState(const std::string& status,
                          const std::string& message,
                          const std::string& logPath,
@@ -277,8 +298,15 @@ private:
             return config;
         }
 
-        config.supported = true;
         config.logPath = envOrDefault("MYCLOUD_UPDATE_LOG_PATH", "/tmp/mycloud-update.log");
+        if (!isValidLogPath(config.logPath)) {
+            config.message =
+                "MYCLOUD_UPDATE_LOG_PATH must be an absolute path under /tmp/ or /data/ "
+                "with no path-traversal components.";
+            return config;
+        }
+
+        config.supported = true;
         config.message =
             "One-click apply will pull the latest git changes and rebuild the configured "
             "services through the host Docker daemon.";
