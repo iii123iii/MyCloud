@@ -4,6 +4,7 @@
 #include <string>
 #include <fstream>
 #include <iostream>
+#include <thread>
 
 // Controllers (header-only Drogon style)
 #include "controllers/SetupController.h"
@@ -53,7 +54,12 @@ int main() {
     mysqlCfg.databaseName = dbName;
     mysqlCfg.username         = dbUser;
     mysqlCfg.password         = dbPass;
-    mysqlCfg.connectionNumber = 20;  // increased from 10 for higher concurrency
+    // IMPORTANT: connectionNumber is per IO thread, not total.
+    // setThreadNum(0) spawns hardware_concurrency() threads, so:
+    //   total DB connections = connectionNumber × thread_count
+    // We target ~80 total, staying well under MariaDB's max_connections (200).
+    // This auto-scales: 8 cores → 10/thread, 16 cores → 5/thread, etc.
+    mysqlCfg.connectionNumber = std::max(2u, 80u / std::max(1u, std::thread::hardware_concurrency()));
     mysqlCfg.characterSet  = "utf8mb4";
     mysqlCfg.timeout       = 60.0;
     mysqlCfg.name          = "default";

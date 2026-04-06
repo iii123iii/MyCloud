@@ -60,6 +60,7 @@ services:
 
   mariadb:
     image: mariadb:11
+    command: --max-connections=200
     environment:
       - MYSQL_ROOT_PASSWORD_FILE=/run/secrets/db_root_password
       - MYSQL_DATABASE=mycloud
