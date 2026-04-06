@@ -114,6 +114,48 @@ echo "Running database migrations..."
 run_migrations
 
 # Rebuild and restart the web-facing services after updating the checkout.
+#
+# IMPORTANT: This script runs inside the backend container.  A plain
+# `docker compose up -d --build backend …` would ask Docker to destroy the
+# very container that is running this command.  When Docker tears down the
+# old backend container, the `docker compose` process dies mid-operation and
+# no new container is ever started — leaving the backend offline.
+#
+# The fix: build images first (safe — no containers are touched), then
+# delegate the restart to a short-lived *separate* container.  That
+# container survives the backend being recreated, so every service comes
+# back up reliably.
+
 # shellcheck disable=SC2086  -- word-split of $SERVICES is intentional (validated above)
 set -- $SERVICES
-docker compose up -d --build "$@"
+
+# 1. Build all images inside the current container (no restart happens here).
+docker compose build "$@"
+
+# 2. Bring services up from an independent, ephemeral container.
+#    • Mounts the Docker socket so it can talk to the daemon.
+#    • Mounts the project directory so Compose can find the config.
+#    • Uses the just-built mycloud-backend image (has docker-compose-v2).
+#    • Runs detached (-d) so we don't block on a container that will outlive us.
+#
+#    The log volume is resolved from this container's mounts so the updater
+#    can append to the same update.log the admin UI reads.
+LOG_PATH="${MYCLOUD_UPDATE_LOG_PATH:-/tmp/mycloud-update.log}"
+LOG_VOL_SRC="$(docker inspect \
+  --format '{{range .Mounts}}{{if eq .Destination "/data/logs"}}{{.Source}}{{end}}{{end}}' \
+  "$(hostname)" 2>/dev/null || true)"
+
+docker rm -f mycloud-updater 2>/dev/null || true
+
+_run_args="--name mycloud-updater"
+_run_args="$_run_args -v /var/run/docker.sock:/var/run/docker.sock"
+_run_args="$_run_args -v $PROJECT_DIR:$PROJECT_DIR"
+if [ -n "$LOG_VOL_SRC" ]; then
+  _run_args="$_run_args -v $LOG_VOL_SRC:/data/logs"
+fi
+
+# shellcheck disable=SC2086  -- $_run_args is intentionally word-split
+docker run -d --rm $_run_args \
+  -w "$PROJECT_DIR" \
+  mycloud-backend \
+  sh -c "docker compose up -d $* >> '$LOG_PATH' 2>&1"
