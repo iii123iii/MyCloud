@@ -22,6 +22,7 @@ services:
     build:
       context: ./backend
       args:
+        # Single source of truth for the backend version embedded at build time.
         MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.1.1}
     environment:
       DB_HOST: mariadb

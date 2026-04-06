@@ -91,18 +91,14 @@ In practice:
 
 ## Versioning and updates
 
-MyCloud keeps a default version string in the backend source, but Docker-based update builds can
-override it from the latest reachable git tag so the running binary matches the deployed release.
+For Docker deployments, `MYCLOUD_VERSION` in `docker-compose.yml` is the release source of truth
+for the backend version embedded at build time.
 
 ### How to release a new version
 
 1. **Set the release version source:**
-   - Preferred for Docker deployments: create and push the git tag you want to ship.
-   - Fallback/default: edit `backend/src/utils/Version.h` and change `MYCLOUD_VERSION` to the new tag:
-   ```cpp
-   #define MYCLOUD_VERSION "v1.1.0"
-   ```
-   The value must exactly match the GitHub release tag you will create (including the leading `v`).
+   - Update `MYCLOUD_VERSION` in `docker-compose.yml` to the release tag you want to ship.
+   - The value must exactly match the GitHub release tag you will create, including the leading `v`.
 
 2. **Commit and push the code:**
    ```bash

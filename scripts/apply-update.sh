@@ -46,8 +46,8 @@ version_is_greater() {
 }
 
 extract_checkout_version() {
-  sed -n 's/^#define MYCLOUD_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' \
-    backend/src/utils/Version.h | head -n 1
+  sed -n 's/.*MYCLOUD_VERSION:[[:space:]]*[$][{]MYCLOUD_VERSION:-\([^}]*\)[}].*/\1/p' \
+    docker-compose.yml | head -n 1
 }
 
 if [ -n "$TARGET_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then

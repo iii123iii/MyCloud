@@ -19,6 +19,7 @@ file(GLOB_RECURSE SOURCES src/*.cpp)
 
 add_executable(mycloud_backend ${SOURCES})
 set(MYCLOUD_VERSION_OVERRIDE "" CACHE STRING "Version string embedded in the backend binary")
+set(MYCLOUD_GITHUB_REPO_OVERRIDE "iii123iii/MyCloud" CACHE STRING "GitHub repo used for update checks")
 
 target_include_directories(mycloud_backend PRIVATE
     src
@@ -27,8 +28,15 @@ target_include_directories(mycloud_backend PRIVATE
 )
 
 if(MYCLOUD_VERSION_OVERRIDE)
-    target_compile_definitions(mycloud_backend PRIVATE MYCLOUD_VERSION="${MYCLOUD_VERSION_OVERRIDE}")
+    set(MYCLOUD_VERSION_VALUE "${MYCLOUD_VERSION_OVERRIDE}")
+else()
+    set(MYCLOUD_VERSION_VALUE "v0.0.0-dev")
 endif()
+
+target_compile_definitions(mycloud_backend PRIVATE
+    MYCLOUD_VERSION="${MYCLOUD_VERSION_VALUE}"
+    MYCLOUD_GITHUB_REPO="${MYCLOUD_GITHUB_REPO_OVERRIDE}"
+)
 
 target_link_libraries(mycloud_backend PRIVATE
     Drogon::Drogon

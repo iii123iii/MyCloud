@@ -22,7 +22,6 @@
 #include <vector>
 
 #include "utils/ResponseUtils.h"
-#include "utils/Version.h"
 
 class UpdateController : public drogon::HttpController<UpdateController> {
 public:

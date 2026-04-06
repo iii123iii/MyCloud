@@ -41,17 +41,9 @@ echo "── git pull ───────────────────�
 git fetch --tags
 git pull --ff-only
 
-# ── Resolve version from git tags ─────────────────────────────────────────────
-# Instead of reading Version.h (which requires a manual bump), derive the
-# version from the latest reachable git tag.  This value is passed as a Docker
-# build arg so the compiled binary embeds the correct version string.
-
-GIT_VERSION="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-if [ -n "$GIT_VERSION" ]; then
-  echo ""
-  echo "Detected version from git tag: $GIT_VERSION"
-  export MYCLOUD_VERSION="$GIT_VERSION"
-fi
+# ── Version source of truth ───────────────────────────────────────────────────
+# The backend version embedded in container builds comes from docker-compose.yml
+# via the backend build arg. Do not override MYCLOUD_VERSION here.
 
 # ── Database migrations ──────────────────────────────────────────────────────
 
@@ -103,4 +95,3 @@ docker compose up -d $SERVICES
 echo ""
 echo "── Update complete ──────────────────────────────────────────"
 echo "Services restarted: $SERVICES"
-[ -n "${GIT_VERSION:-}" ] && echo "Version: $GIT_VERSION"

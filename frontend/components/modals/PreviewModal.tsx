@@ -94,11 +94,8 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
           )}
 
           {!loading && !isPreviewable(file.mime_type) && (
-            <div className="text-center space-y-2">
+            <div className="text-center">
               <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
-              <Button variant="outline" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-1.5" /> Download to view
-              </Button>
             </div>
           )}
 

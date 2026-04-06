@@ -1,6 +1,6 @@
 FROM ubuntu:24.04 AS builder
 
-ARG MYCLOUD_VERSION=v1.1.0
+ARG MYCLOUD_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 
