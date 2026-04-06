@@ -31,7 +31,7 @@ interface EditState {
 export function UserTable({ users, onMutate }: Props) {
   const [editState, setEditState] = useState<EditState | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ username: "", email: "", password: "", role: "user", quota: "10737418240" });
+  const [newUser, setNewUser] = useState({ username: "", email: "", password: "", role: "user", quota: "10" });
 
   const toggleActive = async (user: User) => {
     try {
@@ -59,7 +59,7 @@ export function UserTable({ users, onMutate }: Props) {
     try {
       const updates: Partial<User & { password: string }> = {
         role:        editState.role as "admin" | "user",
-        quota_bytes: parseInt(editState.quota),
+        quota_bytes: Math.round(parseFloat(editState.quota) * 1_073_741_824),
       };
       if (editState.newPassword) updates.password = editState.newPassword;
       await adminApi.updateUser(editState.user.id, updates);
@@ -78,12 +78,12 @@ export function UserTable({ users, onMutate }: Props) {
         email: newUser.email,
         password: newUser.password,
         role: newUser.role as "admin" | "user",
-        quota_bytes: parseInt(newUser.quota),
+        quota_bytes: Math.round(parseFloat(newUser.quota) * 1_073_741_824),
       } as User & { password: string });
       onMutate();
       toast.success("User created");
       setCreateOpen(false);
-      setNewUser({ username: "", email: "", password: "", role: "user", quota: "10737418240" });
+      setNewUser({ username: "", email: "", password: "", role: "user", quota: "10" });
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to create user");
     }
@@ -133,7 +133,7 @@ export function UserTable({ users, onMutate }: Props) {
                 <TableCell>
                   <div className="flex items-center gap-1">
                     <Button variant="ghost" size="icon" className="h-7 w-7"
-                      onClick={() => setEditState({ user, newPassword: "", quota: String(user.quota_bytes), role: user.role })}>
+                      onClick={() => setEditState({ user, newPassword: "", quota: String(user.quota_bytes / 1_073_741_824), role: user.role })}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleActive(user)}>
@@ -173,8 +173,14 @@ export function UserTable({ users, onMutate }: Props) {
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Quota (bytes)</Label>
-                <Input value={editState.quota} onChange={(e) => setEditState({ ...editState, quota: e.target.value })} />
+                <Label>Quota (GB)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={editState.quota}
+                  onChange={(e) => setEditState({ ...editState, quota: e.target.value })}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>New password (optional)</Label>
@@ -217,6 +223,16 @@ export function UserTable({ users, onMutate }: Props) {
                   <SelectItem value="admin">Admin</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Quota (GB)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.1"
+                value={newUser.quota}
+                onChange={(e) => setNewUser({ ...newUser, quota: e.target.value })}
+              />
             </div>
           </div>
           <DialogFooter>
