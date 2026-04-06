@@ -69,11 +69,13 @@ function showView(view) {
   els.loginView.classList.toggle("is-hidden", view !== "login");
   els.settingsView.classList.toggle("is-hidden", view !== "settings");
 
-  // Settings button: gear when idle, X when open
+  const inMain = view === "main";
   const inSettings = view === "settings";
+
+  els.syncNowBtn.classList.toggle("active", inMain);
   els.settingsBtn.classList.toggle("active", inSettings);
-  els.settingsGearIcon.classList.toggle("is-hidden", inSettings);
-  els.settingsCloseIcon.classList.toggle("is-hidden", !inSettings);
+  els.settingsGearIcon.classList.remove("is-hidden");
+  els.settingsCloseIcon.classList.add("is-hidden");
   els.settingsLabel.textContent = "Settings";
 }
 

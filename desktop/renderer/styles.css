@@ -594,13 +594,6 @@ input, select { font: inherit; }
   background: var(--accent-soft);
   border-radius: var(--radius-sm);
 }
-.footer-btn-primary {
-  color: var(--accent);
-}
-.footer-btn-primary:hover:not(:disabled) {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
 /* Both footer buttons share the bar equally */
 .footer-bar .footer-btn {
   flex: 1;
