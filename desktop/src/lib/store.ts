@@ -3,7 +3,7 @@ import path from "node:path";
 import type { AppState, AppEvent, StateUpdater } from "./types";
 
 const MAX_EVENTS = 40;
-const SAVE_DEBOUNCE_MS = 300;
+const SAVE_DEBOUNCE_MS = 500;
 
 export const DEFAULT_STATE: AppState = {
   apiBaseUrl: "http://localhost:8080",
@@ -23,6 +23,8 @@ export const DEFAULT_STATE: AppState = {
     progress: null,
   },
   events: [],
+  autoSyncMinutes: 5,
+  storageStats: null,
 };
 
 export class StateStore {
@@ -52,13 +54,28 @@ export class StateStore {
   }
 
   private normalize(input: Partial<AppState>): AppState {
-    const base = structuredClone(DEFAULT_STATE);
     return {
-      ...base,
-      ...input,
-      auth: { ...base.auth, ...(input.auth ?? {}) },
-      syncStatus: { ...base.syncStatus, ...(input.syncStatus ?? {}) },
-      roots: Array.isArray(input.roots) ? input.roots : [],
+      apiBaseUrl: input.apiBaseUrl ?? DEFAULT_STATE.apiBaseUrl,
+      allowSelfSignedTls: input.allowSelfSignedTls ?? DEFAULT_STATE.allowSelfSignedTls,
+      auth: {
+        accessToken: input.auth?.accessToken ?? "",
+        refreshToken: input.auth?.refreshToken ?? "",
+        user: input.auth?.user ?? null,
+      },
+      syncStatus: {
+        state: input.syncStatus?.state ?? "idle",
+        message: input.syncStatus?.message ?? "Idle",
+        activeRootId: input.syncStatus?.activeRootId ?? null,
+        lastSyncAt: input.syncStatus?.lastSyncAt ?? null,
+        progress: input.syncStatus?.progress ?? null,
+      },
+      roots: Array.isArray(input.roots)
+        ? input.roots.map((r) => ({
+            ...r,
+            fileCount: r.fileCount ?? 0,
+            dirCount:  r.dirCount ?? 0,
+          }))
+        : [],
       mappings:
         input.mappings && typeof input.mappings === "object"
           ? input.mappings
@@ -66,6 +83,8 @@ export class StateStore {
       events: Array.isArray(input.events)
         ? input.events.slice(0, MAX_EVENTS)
         : [],
+      autoSyncMinutes: input.autoSyncMinutes ?? DEFAULT_STATE.autoSyncMinutes,
+      storageStats: input.storageStats ?? null,
     };
   }
 
@@ -84,11 +103,15 @@ export class StateStore {
   /** Immediately write to disk (call on quit / critical events). */
   flushSync(): void {
     this.dirty = false;
-    fs.writeFileSync(
-      this.filePath,
-      JSON.stringify(this.state, null, 2),
-      "utf8",
-    );
+    try {
+      fs.writeFileSync(
+        this.filePath,
+        JSON.stringify(this.state, null, 2),
+        "utf8",
+      );
+    } catch (error) {
+      console.error("Failed to write state to disk:", error);
+    }
   }
 
   /* ---- public API ------------------------------------------------- */
@@ -97,10 +120,17 @@ export class StateStore {
     return this.state;
   }
 
+  /**
+   * Mutate state in-place. The updater receives the LIVE state object
+   * (not a clone) and should mutate it directly. This avoids the O(n)
+   * structuredClone overhead that was catastrophic with large mapping
+   * tables (tens of thousands of entries).
+   *
+   * For safety, normalize is only applied on load/save boundaries,
+   * not on every mutation.
+   */
   update(updater: StateUpdater): AppState {
-    const draft = structuredClone(this.state);
-    const result = updater(draft) ?? draft;
-    this.state = this.normalize(result);
+    updater(this.state);
     this.scheduleSave();
     return this.state;
   }
@@ -113,11 +143,11 @@ export class StateStore {
       timestamp: new Date().toISOString(),
       ...event,
     };
-    this.update((state) => {
-      state.events.unshift(item);
-      state.events = state.events.slice(0, MAX_EVENTS);
-      return state;
-    });
+    this.state.events.unshift(item);
+    if (this.state.events.length > MAX_EVENTS) {
+      this.state.events.length = MAX_EVENTS;
+    }
+    this.scheduleSave();
     return item;
   }
 

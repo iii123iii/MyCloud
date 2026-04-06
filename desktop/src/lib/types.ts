@@ -24,7 +24,7 @@ export interface SyncProgress {
 }
 
 export interface SyncStatus {
-  state: "idle" | "syncing" | "error";
+  state: "idle" | "syncing" | "error" | "paused";
   message: string;
   activeRootId: string | null;
   lastSyncAt: string | null;
@@ -37,6 +37,15 @@ export interface Root {
   localPath: string;
   remoteRootId: string | null;
   lastScanAt: string | null;
+  fileCount?: number;
+  dirCount?: number;
+}
+
+export interface StorageStats {
+  used_bytes: number;
+  quota_bytes: number;
+  file_count: number;
+  folder_count: number;
 }
 
 export interface MappingEntry {
@@ -64,6 +73,8 @@ export interface AppState {
   mappings: AllMappings;
   syncStatus: SyncStatus;
   events: AppEvent[];
+  autoSyncMinutes: number;
+  storageStats?: StorageStats | null;
 }
 
 export interface LoginPayload {

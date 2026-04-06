@@ -286,8 +286,17 @@ public:
                         fileName,
                         drogon::CT_CUSTOM,
                         mime);
+                    // Sanitize filename to prevent header injection
+                    std::string safeName;
+                    safeName.reserve(fileName.size());
+                    for (char c : fileName) {
+                        if (c == '"' || c == '\\' || c == '\r' || c == '\n' || c == '\0')
+                            continue;
+                        safeName += c;
+                    }
+                    if (safeName.empty()) safeName = "download";
                     resp->addHeader("Content-Disposition",
-                        "attachment; filename=\"" + fileName + "\"");
+                        "attachment; filename=\"" + safeName + "\"");
                     cb(resp);
                 } catch (const std::exception& e) {
                     cb(utils::errorJson(drogon::k500InternalServerError, e.what()));

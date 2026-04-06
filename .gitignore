@@ -5,6 +5,8 @@ node_modules/
 frontend/.next/
 frontend/node_modules/
 backend/build/
+desktop/build
+desktop/dist
 *.o
 *.a
 ssl_certs/

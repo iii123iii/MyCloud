@@ -16,7 +16,14 @@ public:
             cb(utils::errorJson(drogon::k400BadRequest, "q parameter required"));
             return;
         }
-        std::string like = "%" + q + "%";
+        // Escape SQL LIKE wildcards in user input to prevent wildcard injection
+        std::string escaped;
+        escaped.reserve(q.size());
+        for (char c : q) {
+            if (c == '%' || c == '_' || c == '\\') escaped += '\\';
+            escaped += c;
+        }
+        std::string like = "%" + escaped + "%";
 
         auto db = drogon::app().getDbClient();
         db->execSqlAsync(

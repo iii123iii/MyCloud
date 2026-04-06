@@ -50,7 +50,7 @@ RUN git clone --depth=1 https://github.com/Thalhammer/jwt-cpp.git /tmp/jwt-cpp \
 WORKDIR /app
 COPY . .
 
-RUN mkdir -p build && cd build \
+RUN rm -rf build && mkdir -p build && cd build \
     && cmake .. -DCMAKE_BUILD_TYPE=Release \
     && make -j$(nproc)
 

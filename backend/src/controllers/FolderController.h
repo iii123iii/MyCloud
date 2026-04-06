@@ -1,34 +1,9 @@
 #pragma once
 #include <drogon/HttpController.h>
+#include "utils/FolderTreeUtils.h"
 #include "utils/ResponseUtils.h"
 #include "utils/UuidUtils.h"
 #include <vector>
-
-static std::vector<std::string> collectFolderTree(
-    const drogon::orm::DbClientPtr& db,
-    const std::string& rootId,
-    const std::string& userId,
-    bool onlyDeleted = false) {
-    std::string sql =
-        "WITH RECURSIVE folder_tree AS ("
-        " SELECT id FROM folders WHERE id=? AND user_id=? ";
-    sql += onlyDeleted ? "AND is_deleted=1" : "AND is_deleted=0";
-    sql +=
-        " UNION ALL "
-        " SELECT f.id FROM folders f "
-        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
-        " WHERE f.user_id=? ";
-    sql += onlyDeleted ? "AND f.is_deleted=1" : "AND f.is_deleted=0";
-    sql +=
-        ") "
-        "SELECT id FROM folder_tree";
-
-    std::vector<std::string> ids;
-    auto result = db->execSqlSync(sql, rootId, userId, userId);
-    ids.reserve(result.size());
-    for (const auto& row : result) ids.push_back(row["id"].as<std::string>());
-    return ids;
-}
 
 class FolderController : public drogon::HttpController<FolderController> {
 public:
@@ -214,45 +189,50 @@ public:
                     cb(utils::errorJson(drogon::k400BadRequest, "Cannot move folder into itself"));
                     return;
                 }
-                try {
-                    auto targetParent = db->execSqlSync(
-                        "SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=0",
-                        pid, userId);
-                    if (targetParent.empty()) {
-                        cb(utils::errorJson(drogon::k404NotFound, "Destination folder not found"));
-                        return;
-                    }
-
-                    auto cycleCheck = db->execSqlSync(
-                        "WITH RECURSIVE folder_tree AS ("
-                        " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=0"
-                        " UNION ALL "
-                        " SELECT f.id FROM folders f "
-                        " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
-                        " WHERE f.user_id=? AND f.is_deleted=0"
-                        ") "
-                        "SELECT id FROM folder_tree WHERE id=? LIMIT 1",
-                        id, userId, userId, pid);
-                    if (!cycleCheck.empty()) {
-                        cb(utils::errorJson(drogon::k400BadRequest,
-                           "Cannot move folder into one of its descendants"));
-                        return;
-                    }
-
-                    db->execSqlAsync(
-                        "UPDATE folders SET parent_id=? WHERE id=? AND user_id=? AND is_deleted=0",
-                        [cb](const drogon::orm::Result& r) {
-                            if (r.affectedRows() == 0)
-                                cb(utils::errorJson(drogon::k404NotFound, "Folder not found"));
-                            else { Json::Value ok; ok["message"] = "Updated"; cb(utils::okJson(ok)); }
-                        },
-                        [cb](const drogon::orm::DrogonDbException& e) {
-                            cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
-                        },
-                        pid, id, userId);
-                } catch (const drogon::orm::DrogonDbException& e) {
-                    cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
-                }
+                // Fully async cycle-check — no blocking calls on the event loop
+                db->execSqlAsync(
+                    "SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=0",
+                    [cb, db, id, userId, pid](const drogon::orm::Result& targetParent) {
+                        if (targetParent.empty()) {
+                            cb(utils::errorJson(drogon::k404NotFound, "Destination folder not found"));
+                            return;
+                        }
+                        db->execSqlAsync(
+                            "WITH RECURSIVE folder_tree AS ("
+                            " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=0"
+                            " UNION ALL "
+                            " SELECT f.id FROM folders f "
+                            " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
+                            " WHERE f.user_id=? AND f.is_deleted=0"
+                            ") "
+                            "SELECT id FROM folder_tree WHERE id=? LIMIT 1",
+                            [cb, db, id, userId, pid](const drogon::orm::Result& cycleCheck) {
+                                if (!cycleCheck.empty()) {
+                                    cb(utils::errorJson(drogon::k400BadRequest,
+                                       "Cannot move folder into one of its descendants"));
+                                    return;
+                                }
+                                db->execSqlAsync(
+                                    "UPDATE folders SET parent_id=? WHERE id=? AND user_id=? AND is_deleted=0",
+                                    [cb](const drogon::orm::Result& r) {
+                                        if (r.affectedRows() == 0)
+                                            cb(utils::errorJson(drogon::k404NotFound, "Folder not found"));
+                                        else { Json::Value ok; ok["message"] = "Updated"; cb(utils::okJson(ok)); }
+                                    },
+                                    [cb](const drogon::orm::DrogonDbException& e) {
+                                        cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                                    },
+                                    pid, id, userId);
+                            },
+                            [cb](const drogon::orm::DrogonDbException& e) {
+                                cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                            },
+                            id, userId, userId, pid);
+                    },
+                    [cb](const drogon::orm::DrogonDbException& e) {
+                        cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                    },
+                    pid, userId);
             }
             return;
         }
@@ -271,32 +251,7 @@ public:
                 cb(utils::errorJson(drogon::k404NotFound, "Folder not found"));
                 return;
             }
-
-            db->execSqlSync(
-                "WITH RECURSIVE folder_tree AS ("
-                " SELECT id FROM folders WHERE id=? AND user_id=? AND is_deleted=0"
-                " UNION ALL "
-                " SELECT f.id FROM folders f "
-                " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
-                " WHERE f.user_id=? AND f.is_deleted=0"
-                ") "
-                "UPDATE folders "
-                "SET is_deleted=1, deleted_at=NOW() "
-                "WHERE id IN (SELECT id FROM folder_tree)",
-                id, userId, userId);
-
-            db->execSqlSync(
-                "WITH RECURSIVE folder_tree AS ("
-                " SELECT id FROM folders WHERE id=? AND user_id=?"
-                " UNION ALL "
-                " SELECT f.id FROM folders f "
-                " INNER JOIN folder_tree ft ON f.parent_id=ft.id "
-                " WHERE f.user_id=?"
-                ") "
-                "UPDATE files "
-                "SET is_deleted=1, deleted_at=NOW() "
-                "WHERE user_id=? AND is_deleted=0 AND folder_id IN (SELECT id FROM folder_tree)",
-                id, userId, userId, userId);
+            softDeleteFolderTree(db, folderIds, userId);
 
             cb(utils::noContent());
         } catch (const drogon::orm::DrogonDbException& e) {

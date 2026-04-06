@@ -52,7 +52,7 @@ int main() {
     mysqlCfg.databaseName = dbName;
     mysqlCfg.username         = dbUser;
     mysqlCfg.password         = dbPass;
-    mysqlCfg.connectionNumber = 10;
+    mysqlCfg.connectionNumber = 20;  // increased from 10 for higher concurrency
     mysqlCfg.characterSet  = "utf8mb4";
     mysqlCfg.timeout       = 60.0;
     mysqlCfg.name          = "default";

@@ -37,39 +37,75 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function walkDirectory(
-  rootPath: string,
-  currentPath: string = rootPath,
-  output: WalkResult = { directories: [], files: [] },
-): Promise<WalkResult> {
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
-  } catch {
-    return output;
-  }
-  for (const entry of entries) {
-    // Skip hidden files and system artifacts at scan time
-    if (
-      entry.name.startsWith(".") ||
-      /^(Thumbs\.db|desktop\.ini)$/i.test(entry.name) ||
-      /\.(tmp|swp|swx|part)$/i.test(entry.name) ||
-      entry.name.startsWith("~")
-    ) {
+/** Skip hidden files, temp files, and system artifacts. */
+function shouldSkipEntry(name: string): boolean {
+  return (
+    name.startsWith(".") ||
+    name.startsWith("~") ||
+    /^(Thumbs\.db|desktop\.ini)$/i.test(name) ||
+    /\.(tmp|swp|swx|part)$/i.test(name)
+  );
+}
+
+/**
+ * Iterative directory walker — safe for arbitrarily deep trees.
+ * Uses a stack instead of recursion to avoid stack overflow with
+ * deeply nested directories (tens of thousands of files).
+ */
+async function walkDirectory(rootPath: string): Promise<WalkResult> {
+  const output: WalkResult = { directories: [], files: [] };
+  const stack: string[] = [rootPath];
+
+  while (stack.length > 0) {
+    const currentPath = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
+    } catch {
       continue;
     }
-    const fullPath = path.join(currentPath, entry.name);
-    const relativePath = normalizeRelativePath(
-      path.relative(rootPath, fullPath),
-    );
-    if (entry.isDirectory()) {
-      output.directories.push(relativePath);
-      await walkDirectory(rootPath, fullPath, output);
-    } else if (entry.isFile()) {
-      output.files.push(relativePath);
+    for (const entry of entries) {
+      if (shouldSkipEntry(entry.name)) continue;
+
+      const fullPath = path.join(currentPath, entry.name);
+      const relativePath = normalizeRelativePath(
+        path.relative(rootPath, fullPath),
+      );
+      if (entry.isDirectory()) {
+        output.directories.push(relativePath);
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        output.files.push(relativePath);
+      }
     }
   }
   return output;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Concurrency limiter for parallel uploads                          */
+/* ------------------------------------------------------------------ */
+
+async function parallelMap<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let idx = 0;
+  const total = items.length;
+
+  async function worker(): Promise<void> {
+    while (idx < total) {
+      const i = idx++;
+      await fn(items[i], i);
+    }
+  }
+
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < Math.min(concurrency, total); w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 }
 
 /* ------------------------------------------------------------------ */
@@ -77,6 +113,16 @@ async function walkDirectory(
 /* ------------------------------------------------------------------ */
 
 const EMIT_INTERVAL_MS = 80;
+
+/** Number of concurrent file uploads during bulk sync. */
+const UPLOAD_CONCURRENCY = 6;
+
+/**
+ * How long (ms) to batch rapid FS events before processing.
+ * Prevents a bulk file paste (e.g. 5 000 files) from creating
+ * 5 000 individual queue items — they get coalesced instead.
+ */
+const FS_EVENT_DEBOUNCE_MS = 500;
 
 /* ------------------------------------------------------------------ */
 /*  SyncEngine                                                         */
@@ -94,6 +140,12 @@ type FsEventType =
   | "dir-upsert"
   | "dir-delete";
 
+interface PendingFsEvent {
+  type: FsEventType;
+  rootId: string;
+  fullPath: string;
+}
+
 export class SyncEngine {
   private readonly store: StateStore;
   private readonly api: ApiClient;
@@ -104,6 +156,10 @@ export class SyncEngine {
   // Throttle state emissions
   private lastEmitTime = 0;
   private emitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Batched FS event processing — groups rapid events before processing
+  private pendingFsEvents: PendingFsEvent[] = [];
+  private fsEventTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor({ store, api, emitState }: SyncEngineOptions) {
     this.store = store;
@@ -123,9 +179,46 @@ export class SyncEngine {
   }
 
   stopAllWatchers(): void {
+    if (this.fsEventTimer) {
+      clearTimeout(this.fsEventTimer);
+      this.fsEventTimer = null;
+      this.pendingFsEvents.length = 0;
+    }
     for (const rootId of [...this.watchers.keys()]) {
       this.detachWatcher(rootId);
     }
+  }
+
+  /* ---- pause / resume -------------------------------------------- */
+
+  get isPaused(): boolean {
+    return this.store.getState().syncStatus.state === "paused";
+  }
+
+  pause(): void {
+    this.store.update((s) => {
+      s.syncStatus.state = "paused";
+      s.syncStatus.message = "Paused";
+      s.syncStatus.progress = null;
+    });
+    this.emit();
+  }
+
+  resume(): void {
+    this.store.update((s) => {
+      if (s.syncStatus.state === "paused") {
+        s.syncStatus.state = "idle";
+        s.syncStatus.message = "Idle";
+      }
+    });
+    this.emit();
+  }
+
+  /* ---- auto-sync interval ---------------------------------------- */
+
+  setAutoSyncMinutes(minutes: number): void {
+    this.store.update((s) => { s.autoSyncMinutes = minutes; });
+    this.emit();
   }
 
   /* ---- state helpers --------------------------------------------- */
@@ -180,6 +273,9 @@ export class SyncEngine {
     activeRootId: string | null = null,
     progress: SyncProgress | null = null,
   ): void {
+    // Never overwrite "paused" with "idle" — user explicitly paused
+    if (this.isPaused && state === "idle") return;
+
     this.store.update((draft) => {
       draft.syncStatus.state = state;
       draft.syncStatus.message = message;
@@ -322,7 +418,13 @@ export class SyncEngine {
     this.attachWatcher(root);
     this.emit();
 
-    await this.enqueue(() => this.syncRoot(root.id, true));
+    await this.enqueue(async () => {
+      await this.syncRoot(root.id, true);
+      const syncStatus = this.store.getState().syncStatus;
+      if (syncStatus.state === "syncing" && syncStatus.activeRootId === root.id) {
+        this.setStatus("idle", "Idle", root.id);
+      }
+    });
     return this.getRoot(root.id)!;
   }
 
@@ -375,57 +477,113 @@ export class SyncEngine {
 
   /* ---- live FS events -------------------------------------------- */
 
-  private async onFsEvent(
+  /**
+   * Debounced FS event handler.
+   * Rapid events (e.g. pasting 5 000 files) are batched into one queue
+   * item, deduped, and then processed with concurrency.
+   */
+  private onFsEvent(
     type: FsEventType,
     rootId: string,
     fullPath: string,
-  ): Promise<void> {
-    await this.enqueue(async () => {
-      if (!this.store.getState().auth.user) return;
-      const root = this.getRoot(rootId);
-      if (!root) return;
-      const relativePath = normalizeRelativePath(
-        path.relative(root.localPath, fullPath),
-      );
-      if (!relativePath) return;
+  ): void {
+    this.pendingFsEvents.push({ type, rootId, fullPath });
 
-      if (type === "dir-upsert") {
-        this.setStatus("syncing", `Creating folder ${relativePath}`, rootId);
-        await this.ensureRemoteFolder(root, relativePath);
-        this.pushEvent("info", `Created folder ${relativePath}`, rootId);
-      }
+    if (this.fsEventTimer) return;
+    this.fsEventTimer = setTimeout(() => {
+      this.fsEventTimer = null;
+      const batch = this.pendingFsEvents.splice(0);
+      if (batch.length === 0) return;
 
-      if (type === "file-upsert") {
-        this.setStatus("syncing", `Uploading ${relativePath}`, rootId);
-        await this.syncFile(root, relativePath);
-        this.pushEvent("success", `Uploaded ${relativePath}`, rootId);
-      }
+      void this.enqueue(async () => {
+        if (!this.store.getState().auth.user) return;
 
-      if (type === "file-delete") {
-        this.setStatus("syncing", `Deleting ${relativePath}`, rootId);
-        await this.removeFileMapping(rootId, relativePath);
-        this.pushEvent("info", `Deleted ${relativePath}`, rootId);
-      }
+        // Deduplicate: keep last event per path (e.g. add→change = change)
+        const deduped = new Map<string, PendingFsEvent>();
+        for (const evt of batch) {
+          const root = this.getRoot(evt.rootId);
+          if (!root) continue;
+          const rel = normalizeRelativePath(
+            path.relative(root.localPath, evt.fullPath),
+          );
+          if (!rel) continue;
+          deduped.set(`${evt.rootId}::${rel}`, evt);
+        }
 
-      if (type === "dir-delete") {
-        this.setStatus("syncing", `Deleting folder ${relativePath}`, rootId);
-        await this.removeDirectoryMapping(rootId, relativePath);
-        this.pushEvent("info", `Deleted folder ${relativePath}`, rootId);
-      }
+        const events = [...deduped.values()];
+        if (events.length === 0) return;
 
-      this.setStatus("idle", "Idle", rootId);
-    });
+        // Separate into categories for ordered processing
+        const dirUpserts: PendingFsEvent[] = [];
+        const fileUpserts: PendingFsEvent[] = [];
+        const fileDeletes: PendingFsEvent[] = [];
+        const dirDeletes: PendingFsEvent[] = [];
+
+        for (const evt of events) {
+          if (evt.type === "dir-upsert") dirUpserts.push(evt);
+          else if (evt.type === "file-upsert") fileUpserts.push(evt);
+          else if (evt.type === "file-delete") fileDeletes.push(evt);
+          else if (evt.type === "dir-delete") dirDeletes.push(evt);
+        }
+
+        const rootId = events[0].rootId;
+        this.setStatus("syncing", `Processing ${events.length} changes`, rootId);
+
+        // 1) Create directories first (sorted so parents come before children)
+        for (const evt of dirUpserts.sort((a, b) => a.fullPath.localeCompare(b.fullPath))) {
+          const root = this.getRoot(evt.rootId);
+          if (!root) continue;
+          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          await this.ensureRemoteFolder(root, rel);
+        }
+
+        // 2) Upload files concurrently
+        await parallelMap(fileUpserts, UPLOAD_CONCURRENCY, async (evt) => {
+          const root = this.getRoot(evt.rootId);
+          if (!root) return;
+          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          this.setStatus("syncing", `Uploading ${rel}`, evt.rootId);
+          await this.syncFile(root, rel);
+        });
+
+        // 3) Delete files
+        for (const evt of fileDeletes) {
+          const root = this.getRoot(evt.rootId);
+          if (!root) continue;
+          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          await this.removeFileMapping(evt.rootId, rel);
+        }
+
+        // 4) Delete directories (deepest first)
+        for (const evt of dirDeletes.sort((a, b) => b.fullPath.localeCompare(a.fullPath))) {
+          const root = this.getRoot(evt.rootId);
+          if (!root) continue;
+          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          await this.removeDirectoryMapping(evt.rootId, rel);
+        }
+
+        this.pushEvent(
+          "success",
+          `Processed ${events.length} file system change${events.length === 1 ? "" : "s"}`,
+          rootId,
+        );
+        this.setStatus("idle", "Idle", rootId);
+      });
+    }, FS_EVENT_DEBOUNCE_MS);
   }
 
   /* ---- full sync ------------------------------------------------- */
 
   async scheduleFullSync(): Promise<void> {
+    if (this.isPaused) return;
     if (!this.store.getState().auth.user) {
       this.setStatus("idle", "Sign in to sync");
       return;
     }
     await this.enqueue(async () => {
+      if (this.isPaused) return;
       for (const root of this.store.getState().roots) {
+        if (this.isPaused) break;
         await this.syncRoot(root.id, !root.remoteRootId);
       }
       this.setStatus("idle", "Idle");
@@ -480,7 +638,7 @@ export class SyncEngine {
       this.pushEvent("success", `Created remote root ${root.label}`, rootId);
     }
 
-    // Scan local tree
+    // Scan local tree (iterative — won't overflow on deep trees)
     const scan = await walkDirectory(root.localPath);
     const mappings = this.getMappings(rootId);
     const currentDirectories = new Set(scan.directories);
@@ -503,26 +661,30 @@ export class SyncEngine {
       await this.ensureRemoteFolder(this.getRoot(rootId)!, dir);
     }
 
-    // Sync files
-    for (const file of [...scan.files].sort()) {
+    // Sync files — run UPLOAD_CONCURRENCY uploads in parallel
+    const sortedFiles = [...scan.files].sort();
+    await parallelMap(sortedFiles, UPLOAD_CONCURRENCY, async (file) => {
       const progress = tracker.tick(file);
       this.setStatus("syncing", `Uploading ${file}`, rootId, progress);
       await this.syncFile(this.getRoot(rootId)!, file);
-    }
+    });
 
     // Clean up stale mappings (remote items that no longer exist locally)
-    const mappedPaths = Object.keys(mappings).sort((a, b) =>
-      b.localeCompare(a),
-    );
-    for (const mappedPath of mappedPaths) {
+    const staleMappings = Object.keys(mappings)
+      .filter(
+        (p) =>
+          (mappings[p].type === "file" && !currentFiles.has(p)) ||
+          (mappings[p].type === "folder" && !currentDirectories.has(p)),
+      )
+      .sort((a, b) => b.localeCompare(a));
+
+    for (const mappedPath of staleMappings) {
       const item = mappings[mappedPath];
-      if (item.type === "file" && !currentFiles.has(mappedPath)) {
-        const progress = tracker.tick(mappedPath);
+      const progress = tracker.tick(mappedPath);
+      if (item.type === "file") {
         this.setStatus("syncing", `Removing ${mappedPath}`, rootId, progress);
         await this.removeFileMapping(rootId, mappedPath);
-      }
-      if (item.type === "folder" && !currentDirectories.has(mappedPath)) {
-        const progress = tracker.tick(mappedPath);
+      } else if (item.type === "folder") {
         this.setStatus(
           "syncing",
           `Removing folder ${mappedPath}`,
@@ -699,36 +861,6 @@ export class SyncEngine {
       }
 
       // Always remove the local mapping even if remote delete failed.
-      this.store.update((state) => {
-        if (state.mappings[rootId]) {
-          delete state.mappings[rootId][itemPath];
-        }
-        return state;
-      });
-    }
-  }
-
-  private async deleteMappedChildren(rootId: string): Promise<void> {
-    const mappings = this.getMappings(rootId);
-    const items = Object.keys(mappings).sort((a, b) => b.localeCompare(a));
-    for (const itemPath of items) {
-      const item = mappings[itemPath];
-
-      try {
-        if (item.type === "file") {
-          await this.api.deleteFile(item.remoteId);
-        } else if (item.type === "folder") {
-          await this.api.deleteFolder(item.remoteId);
-        }
-      } catch (error: unknown) {
-        this.pushEvent(
-          "error",
-          `Could not delete remote item ${itemPath}: ${errorMessage(error)}`,
-          rootId,
-        );
-      }
-
-      // Always clear the local mapping entry.
       this.store.update((state) => {
         if (state.mappings[rootId]) {
           delete state.mappings[rootId][itemPath];

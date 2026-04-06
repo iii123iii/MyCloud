@@ -7,6 +7,19 @@
 #include <unordered_map>
 #include <algorithm>
 
+// Sanitize filename for Content-Disposition header to prevent header injection.
+// Strips characters that could break the HTTP header or be used for path traversal.
+static std::string sanitizeFilename(const std::string& name) {
+    std::string safe;
+    safe.reserve(name.size());
+    for (char c : name) {
+        if (c == '"' || c == '\\' || c == '\r' || c == '\n' || c == '\0')
+            continue; // strip dangerous chars
+        safe += c;
+    }
+    return safe.empty() ? "download" : safe;
+}
+
 // Simple extension → MIME lookup
 static std::string mimeFromFilename(const std::string& name) {
     auto dot = name.rfind('.');
@@ -47,13 +60,14 @@ static int safeInt(const std::string& s, int def, int minVal, int maxVal) {
 class FileController : public drogon::HttpController<FileController> {
 public:
     METHOD_LIST_BEGIN
-        ADD_METHOD_TO(FileController::listFiles,  "/api/files",             drogon::Get);
-        ADD_METHOD_TO(FileController::upload,     "/api/files/upload",      drogon::Post);
-        ADD_METHOD_TO(FileController::download,   "/api/files/{id}/download", drogon::Get);
-        ADD_METHOD_TO(FileController::preview,    "/api/files/{id}/preview",  drogon::Get);
-        ADD_METHOD_TO(FileController::getInfo,    "/api/files/{id}",          drogon::Get);
-        ADD_METHOD_TO(FileController::updateFile, "/api/files/{id}",          drogon::Patch);
-        ADD_METHOD_TO(FileController::deleteFile, "/api/files/{id}",          drogon::Delete);
+        ADD_METHOD_TO(FileController::listFiles,    "/api/files",               drogon::Get);
+        ADD_METHOD_TO(FileController::upload,       "/api/files/upload",        drogon::Post);
+        ADD_METHOD_TO(FileController::storageStats, "/api/storage/stats",       drogon::Get);
+        ADD_METHOD_TO(FileController::download,     "/api/files/{id}/download", drogon::Get);
+        ADD_METHOD_TO(FileController::preview,      "/api/files/{id}/preview",  drogon::Get);
+        ADD_METHOD_TO(FileController::getInfo,      "/api/files/{id}",          drogon::Get);
+        ADD_METHOD_TO(FileController::updateFile,   "/api/files/{id}",          drogon::Patch);
+        ADD_METHOD_TO(FileController::deleteFile,   "/api/files/{id}",          drogon::Delete);
     METHOD_LIST_END
 
     // ── GET /api/files?folder_id=&sort=&order=&all=1&page=1&page_size=50 ─
@@ -147,6 +161,54 @@ public:
         }
     }
 
+    // ── GET /api/storage/stats ───────────────────────────────────────────
+    // Returns: { used_bytes, quota_bytes, file_count, folder_count }
+    void storageStats(const drogon::HttpRequestPtr& req,
+                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
+        std::string userId = req->getAttributes()->get<std::string>("userId");
+        auto db = drogon::app().getDbClient();
+
+        // Fetch quota/used from users table, file count, folder count in parallel
+        // via sequential calls (Drogon MySQL client is not fork-safe for true parallel)
+        db->execSqlAsync(
+            "SELECT used_bytes, quota_bytes FROM users WHERE id=?",
+            [cb, db, userId](const drogon::orm::Result& ur) {
+                if (ur.empty()) {
+                    cb(utils::errorJson(drogon::k404NotFound, "User not found"));
+                    return;
+                }
+                long long used  = ur[0]["used_bytes"].as<long long>();
+                long long quota = ur[0]["quota_bytes"].as<long long>();
+
+                db->execSqlAsync(
+                    "SELECT COUNT(*) AS cnt FROM files WHERE user_id=? AND is_deleted=0",
+                    [cb, db, userId, used, quota](const drogon::orm::Result& fr) {
+                        long long fileCount = fr[0]["cnt"].as<long long>();
+
+                        db->execSqlAsync(
+                            "SELECT COUNT(*) AS cnt FROM folders WHERE user_id=? AND is_deleted=0",
+                            [cb, used, quota, fileCount](const drogon::orm::Result& folr) {
+                                long long folderCount = folr[0]["cnt"].as<long long>();
+                                Json::Value body;
+                                body["used_bytes"]    = static_cast<Json::Int64>(used);
+                                body["quota_bytes"]   = static_cast<Json::Int64>(quota);
+                                body["file_count"]    = static_cast<Json::Int64>(fileCount);
+                                body["folder_count"]  = static_cast<Json::Int64>(folderCount);
+                                cb(utils::okJson(body));
+                            },
+                            [cb](const drogon::orm::DrogonDbException& e) {
+                                cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                            }, userId);
+                    },
+                    [cb](const drogon::orm::DrogonDbException& e) {
+                        cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+                    }, userId);
+            },
+            [cb](const drogon::orm::DrogonDbException& e) {
+                cb(utils::errorJson(drogon::k500InternalServerError, e.base().what()));
+            }, userId);
+    }
+
     // ── POST /api/files/upload (multipart) ───────────────────────────────
     void upload(const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
@@ -171,11 +233,12 @@ public:
         std::string folderId = parser.getParameters().count("folder_id")
                                 ? parser.getParameters().at("folder_id") : "";
 
-        // Copy file bytes before going async (parser is stack-local)
+        // Copy file bytes into a shared_ptr to avoid lambda-by-value copies
+        // that would double memory usage for large files.
         const char*   rawPtr = file.fileData();
         std::size_t   rawLen = static_cast<std::size_t>(file.fileLength());
         long long     size   = static_cast<long long>(rawLen);
-        std::vector<unsigned char> fileBytes(
+        auto fileBytes = std::make_shared<std::vector<unsigned char>>(
             reinterpret_cast<const unsigned char*>(rawPtr),
             reinterpret_cast<const unsigned char*>(rawPtr) + rawLen);
 
@@ -201,7 +264,7 @@ public:
 
                 // Encrypt in chunks (4 MB at a time) and write to disk
                 auto bundle = services::StorageService::storeFile(
-                    userId, fileId, fileBytes.data(), fileBytes.size());
+                    userId, fileId, fileBytes->data(), fileBytes->size());
 
                 std::string storagePath = services::StorageService::filePath(userId, fileId);
                 auto insertCb = [cb, db, userId, size, fileId, filename, folderId](const drogon::orm::Result&) {
@@ -391,7 +454,7 @@ private:
                         mime);
 
                     resp->addHeader("Content-Disposition",
-                        disposition + "; filename=\"" + fileName + "\"");
+                        disposition + "; filename=\"" + sanitizeFilename(fileName) + "\"");
                     cb(resp);
                 } catch (const std::exception& e) {
                     cb(utils::errorJson(drogon::k500InternalServerError, e.what()));

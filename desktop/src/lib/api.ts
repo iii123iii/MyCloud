@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Agent } from "undici";
 import type { StateStore } from "./store";
-import type { LoginPayload, RemoteEntity, User } from "./types";
+import type { LoginPayload, RemoteEntity, StorageStats, User } from "./types";
 
 /* ------------------------------------------------------------------ */
 /*  Undici agent for self-signed TLS certs                            */
@@ -30,10 +30,16 @@ export class ApiError extends Error {
 /*  Request options                                                    */
 /* ------------------------------------------------------------------ */
 
+/** Max retries for transient network / server errors (5xx). */
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 500;
+
 interface RequestOptions extends Omit<RequestInit, "headers"> {
   noAuth?: boolean;
   retry?: boolean;
   headers?: Record<string, string>;
+  /** Internal: current retry attempt (do not set manually). */
+  _attempt?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -67,7 +73,7 @@ export class ApiClient {
     urlPath: string,
     options: RequestOptions = {},
   ): Promise<T | null> {
-    const { noAuth, retry = true, headers = {}, ...rest } = options;
+    const { noAuth, retry = true, headers = {}, _attempt = 0, ...rest } = options;
     const mergedHeaders: Record<string, string> = { ...headers };
 
     if (!noAuth && this.accessToken) {
@@ -99,6 +105,12 @@ export class ApiClient {
           0,
         );
       }
+      // Retry on transient network errors (ECONNRESET, ECONNREFUSED, etc.)
+      if (_attempt < MAX_RETRIES) {
+        const delay = RETRY_BASE_MS * Math.pow(2, _attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return this.request<T>(urlPath, { ...options, _attempt: _attempt + 1 });
+      }
       throw error;
     }
 
@@ -108,6 +120,13 @@ export class ApiClient {
       if (refreshed) {
         return this.request<T>(urlPath, { ...options, retry: false });
       }
+    }
+
+    // Retry on 5xx server errors
+    if (response.status >= 500 && _attempt < MAX_RETRIES) {
+      const delay = RETRY_BASE_MS * Math.pow(2, _attempt);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return this.request<T>(urlPath, { ...options, _attempt: _attempt + 1 });
     }
 
     if (!response.ok) {
@@ -261,6 +280,17 @@ export class ApiClient {
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 404) return;
       throw error;
+    }
+  }
+
+  /* ---- storage stats -------------------------------------------- */
+
+  /** Fetch used_bytes / quota_bytes / file_count / folder_count. */
+  async getStorageStats(): Promise<StorageStats | null> {
+    try {
+      return await this.request<StorageStats>("/api/storage/stats");
+    } catch {
+      return null;
     }
   }
 }
