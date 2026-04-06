@@ -9,6 +9,8 @@
 #include <drogon/HttpClient.h>
 #include <drogon/HttpController.h>
 #include <fcntl.h>
+#include <json/json.h>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -32,55 +34,63 @@ public:
     void checkUpdate(const drogon::HttpRequestPtr& req,
                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
         (void)req;
+        auto responseCb =
+            std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(std::move(cb));
 
         fetchLatestRelease(
-            [cb = std::move(cb)](const ReleaseInfo& release) mutable {
+            [responseCb](const ReleaseInfo& release) mutable {
                 const ApplyConfig applyConfig = getApplyConfig();
-                const std::string current = MYCLOUD_VERSION;
-                const bool updateAvailable = isVersionNewer(release.latest, current);
-                const StateSnapshot state = snapshotState();
+                if (applyConfig.useRemoteUpdater) {
+                    fetchRemoteUpdaterState(
+                        applyConfig.updaterUrl,
+                        [responseCb, release, applyConfig](const StateSnapshot& state) mutable {
+                            Json::Value out;
+                            fillResponse(out, release, applyConfig, state);
+                            (*responseCb)(utils::okJson(out));
+                        },
+                        [responseCb, release, applyConfig](const std::string& errorMessage) mutable {
+                            StateSnapshot state;
+                            state.status = "unknown";
+                            state.message = errorMessage;
+                            state.logPath = applyConfig.logPath;
+
+                            Json::Value out;
+                            fillResponse(out, release, applyConfig, state);
+                            (*responseCb)(utils::okJson(out));
+                        });
+                    return;
+                }
 
                 Json::Value out;
-                out["current"] = current;
-                out["latest"] = release.latest;
-                out["update_available"] = updateAvailable;
-                out["release_url"] = release.releaseUrl;
-                out["release_name"] = release.releaseName;
-                out["published_at"] = release.publishedAt;
-                out["release_notes"] = release.releaseNotes;
-                out["apply_supported"] = applyConfig.supported;
-                out["apply_message"] = applyConfig.message;
-                out["update_in_progress"] = state.inProgress;
-                out["update_status"] = state.status;
-                out["update_status_message"] = state.message;
-                out["update_log_path"] = state.logPath;
-                out["last_started_target"] = state.targetVersion;
-
-                cb(utils::okJson(out));
+                fillResponse(out, release, applyConfig, snapshotState());
+                (*responseCb)(utils::okJson(out));
             },
-            [cb = std::move(cb)](const drogon::HttpResponsePtr& errorResp) mutable {
-                cb(errorResp);
+            [responseCb](const drogon::HttpResponsePtr& errorResp) mutable {
+                (*responseCb)(errorResp);
             });
     }
 
     void applyUpdate(const drogon::HttpRequestPtr& req,
                      std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
         (void)req;
+        auto responseCb =
+            std::make_shared<std::function<void(const drogon::HttpResponsePtr&)>>(std::move(cb));
 
         const ApplyConfig applyConfig = getApplyConfig();
         if (!applyConfig.supported) {
-            cb(utils::errorJson(drogon::k501NotImplemented, applyConfig.message));
+            (*responseCb)(utils::errorJson(drogon::k501NotImplemented, applyConfig.message));
             return;
         }
 
         bool expected = false;
         if (!updateInProgress_.compare_exchange_strong(expected, true)) {
-            cb(utils::errorJson(drogon::k409Conflict, "An update command is already running."));
+            (*responseCb)(
+                utils::errorJson(drogon::k409Conflict, "An update command is already running."));
             return;
         }
 
         fetchLatestRelease(
-            [cb = std::move(cb), applyConfig](const ReleaseInfo& release) mutable {
+            [responseCb, applyConfig](const ReleaseInfo& release) mutable {
                 const std::string current = MYCLOUD_VERSION;
                 if (!isVersionNewer(release.latest, current)) {
                     updateInProgress_.store(false);
@@ -89,7 +99,7 @@ public:
                              applyConfig.logPath,
                              "",
                              false);
-                    cb(utils::errorJson(
+                    (*responseCb)(utils::errorJson(
                         drogon::k409Conflict,
                         "No newer GitHub release is available for this server."));
                     return;
@@ -101,6 +111,31 @@ public:
                          applyConfig.logPath,
                          release.latest,
                          true);
+
+                if (applyConfig.useRemoteUpdater) {
+                    triggerRemoteUpdate(
+                        applyConfig.updaterUrl,
+                        release.latest,
+                        current,
+                        [responseCb, applyConfig](const std::string& message,
+                                                  const std::string& logPath) mutable {
+                            updateInProgress_.store(false);
+                            Json::Value out;
+                            out["message"] = message;
+                            out["log_path"] = logPath.empty() ? applyConfig.logPath : logPath;
+
+                            auto resp = drogon::HttpResponse::newHttpJsonResponse(out);
+                            resp->setStatusCode(drogon::k202Accepted);
+                            (*responseCb)(resp);
+                        },
+                        [responseCb, applyConfig, release](const drogon::HttpResponsePtr& errorResp,
+                                                           const std::string& message) mutable {
+                            updateInProgress_.store(false);
+                            setState("failed", message, applyConfig.logPath, release.latest, false);
+                            (*responseCb)(errorResp);
+                        });
+                    return;
+                }
 
                 const std::string launchError = launchDetachedCommand(
                     applyConfig.command,
@@ -122,16 +157,16 @@ public:
 
                 auto resp = drogon::HttpResponse::newHttpJsonResponse(out);
                 resp->setStatusCode(drogon::k202Accepted);
-                cb(resp);
+                (*responseCb)(resp);
             },
-            [cb = std::move(cb), applyConfig](const drogon::HttpResponsePtr& errorResp) mutable {
+            [responseCb, applyConfig](const drogon::HttpResponsePtr& errorResp) mutable {
                 updateInProgress_.store(false);
                 setState("failed",
                          "Could not verify the latest GitHub release before applying the update.",
                          applyConfig.logPath,
                          "",
                          false);
-                cb(errorResp);
+                (*responseCb)(errorResp);
             });
     }
 
@@ -153,6 +188,8 @@ private:
         std::string command;
         std::string message;
         std::string logPath;
+        std::string updaterUrl;
+        bool useRemoteUpdater = false;
     };
 
     struct ReleaseInfo {
@@ -181,6 +218,29 @@ private:
     static std::string envOrDefault(const char* name, const char* fallback = "") {
         const char* value = std::getenv(name);
         return (value && value[0] != '\0') ? std::string(value) : std::string(fallback);
+    }
+
+    static void fillResponse(Json::Value& out,
+                             const ReleaseInfo& release,
+                             const ApplyConfig& applyConfig,
+                             const StateSnapshot& state) {
+        const std::string current = MYCLOUD_VERSION;
+        const bool updateAvailable = isVersionNewer(release.latest, current);
+
+        out["current"] = current;
+        out["latest"] = release.latest;
+        out["update_available"] = updateAvailable;
+        out["release_url"] = release.releaseUrl;
+        out["release_name"] = release.releaseName;
+        out["published_at"] = release.publishedAt;
+        out["release_notes"] = release.releaseNotes;
+        out["apply_supported"] = applyConfig.supported;
+        out["apply_message"] = applyConfig.message;
+        out["update_in_progress"] = state.inProgress;
+        out["update_status"] = state.status;
+        out["update_status_message"] = state.message;
+        out["update_log_path"] = state.logPath;
+        out["last_started_target"] = state.targetVersion;
     }
 
     // Returns true only for absolute paths confined to safe directories,
@@ -220,6 +280,30 @@ private:
     static StateSnapshot snapshotState() {
         std::lock_guard<std::mutex> lock(stateMutex_);
         return state_;
+    }
+
+    static std::optional<StateSnapshot> parseRemoteState(const Json::Value& body) {
+        if (!body.isObject()) {
+            return std::nullopt;
+        }
+
+        StateSnapshot state;
+        if (body.isMember("in_progress")) {
+            state.inProgress = body["in_progress"].asBool();
+        }
+        if (body.isMember("message")) {
+            state.message = body["message"].asString();
+        }
+        if (body.isMember("status")) {
+            state.status = body["status"].asString();
+        }
+        if (body.isMember("log_path")) {
+            state.logPath = body["log_path"].asString();
+        }
+        if (body.isMember("target_version")) {
+            state.targetVersion = body["target_version"].asString();
+        }
+        return state;
     }
 
     static void fetchLatestRelease(
@@ -275,8 +359,119 @@ private:
             10.0);
     }
 
+    static void fetchRemoteUpdaterState(
+        const std::string& updaterUrl,
+        std::function<void(const StateSnapshot&)>&& onSuccess,
+        std::function<void(const std::string&)>&& onError) {
+        auto client = drogon::HttpClient::newHttpClient(updaterUrl);
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setPath("/status");
+        req->setMethod(drogon::Get);
+
+        client->sendRequest(
+            req,
+            [onSuccess = std::move(onSuccess),
+             onError = std::move(onError)](drogon::ReqResult result,
+                                           const drogon::HttpResponsePtr& resp) mutable {
+                if (result != drogon::ReqResult::Ok || !resp) {
+                    onError("Updater container is configured, but /status is unreachable.");
+                    return;
+                }
+                if (resp->statusCode() != drogon::k200OK) {
+                    onError("Updater container returned HTTP " +
+                            std::to_string(static_cast<int>(resp->statusCode())) + ".");
+                    return;
+                }
+                auto body = resp->getJsonObject();
+                if (!body) {
+                    onError("Updater container returned malformed JSON.");
+                    return;
+                }
+                const auto state = parseRemoteState(*body);
+                if (!state) {
+                    onError("Updater container returned an unexpected status payload.");
+                    return;
+                }
+                onSuccess(*state);
+            },
+            5.0);
+    }
+
+    static void triggerRemoteUpdate(
+        const std::string& updaterUrl,
+        const std::string& targetVersion,
+        const std::string& currentVersion,
+        std::function<void(const std::string&, const std::string&)>&& onSuccess,
+        std::function<void(const drogon::HttpResponsePtr&, const std::string&)>&& onError) {
+        auto client = drogon::HttpClient::newHttpClient(updaterUrl);
+        auto req = drogon::HttpRequest::newHttpRequest();
+        req->setPath("/update");
+        req->setMethod(drogon::Post);
+        req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+
+        Json::Value body;
+        body["target_version"] = targetVersion;
+        body["current_version"] = currentVersion;
+        req->setBody(body.toStyledString());
+
+        client->sendRequest(
+            req,
+            [onSuccess = std::move(onSuccess),
+             onError = std::move(onError)](drogon::ReqResult result,
+                                           const drogon::HttpResponsePtr& resp) mutable {
+                if (result != drogon::ReqResult::Ok || !resp) {
+                    onError(
+                        utils::errorJson(drogon::k502BadGateway,
+                                         "Could not reach the updater container."),
+                        "Could not reach the updater container.");
+                    return;
+                }
+
+                auto payload = resp->getJsonObject();
+                if (resp->statusCode() != drogon::k202Accepted) {
+                    std::string message = "Updater container rejected the request.";
+                    if (payload && payload->isMember("error")) {
+                        message = (*payload)["error"].asString();
+                    }
+                    onError(utils::errorJson(drogon::k502BadGateway, message), message);
+                    return;
+                }
+
+                std::string message = "Update started.";
+                std::string logPath;
+                if (payload) {
+                    if (payload->isMember("message")) {
+                        message = (*payload)["message"].asString();
+                    }
+                    if (payload->isMember("log_path")) {
+                        logPath = (*payload)["log_path"].asString();
+                    }
+                }
+                onSuccess(message, logPath);
+            },
+            10.0);
+    }
+
     static ApplyConfig getApplyConfig() {
         ApplyConfig config;
+        config.logPath = envOrDefault("MYCLOUD_UPDATE_LOG_PATH", "/tmp/mycloud-update.log");
+        if (!isValidLogPath(config.logPath)) {
+            config.message =
+                "MYCLOUD_UPDATE_LOG_PATH must be an absolute path under /tmp/ or /data/ "
+                "with no path-traversal components.";
+            return config;
+        }
+
+        config.updaterUrl = envOrDefault("MYCLOUD_UPDATER_URL");
+        if (!config.updaterUrl.empty()) {
+            config.supported = true;
+            config.useRemoteUpdater = true;
+            config.message =
+                "One-click apply will call the dedicated updater container to pull, migrate, "
+                "rebuild, and restart the configured services.";
+            return config;
+        }
+
         config.command = envOrDefault("MYCLOUD_UPDATE_COMMAND");
         if (config.command.empty()) {
             config.message =
@@ -295,14 +490,6 @@ private:
             config.message =
                 "One-click apply is configured, but /opt/mycloud/docker-compose.yml is not "
                 "available inside the backend container.";
-            return config;
-        }
-
-        config.logPath = envOrDefault("MYCLOUD_UPDATE_LOG_PATH", "/tmp/mycloud-update.log");
-        if (!isValidLogPath(config.logPath)) {
-            config.message =
-                "MYCLOUD_UPDATE_LOG_PATH must be an absolute path under /tmp/ or /data/ "
-                "with no path-traversal components.";
             return config;
         }
 

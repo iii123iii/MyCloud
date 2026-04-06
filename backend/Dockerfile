@@ -1,5 +1,7 @@
 FROM ubuntu:24.04 AS builder
 
+ARG MYCLOUD_VERSION=v1.1.0
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
@@ -51,7 +53,7 @@ WORKDIR /app
 COPY . .
 
 RUN rm -rf build && mkdir -p build && cd build \
-    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release -DMYCLOUD_VERSION_OVERRIDE="${MYCLOUD_VERSION}" \
     && make -j$(nproc)
 
 # ─── Runtime stage ───────────────────────────────────────────────

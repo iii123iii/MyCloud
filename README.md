@@ -91,11 +91,14 @@ In practice:
 
 ## Versioning and updates
 
-MyCloud uses a single hardcoded version string in the C++ backend. Every release requires bumping it before building.
+MyCloud keeps a default version string in the backend source, but Docker-based update builds can
+override it from the latest reachable git tag so the running binary matches the deployed release.
 
 ### How to release a new version
 
-1. **Edit `backend/src/utils/Version.h`** and change `MYCLOUD_VERSION` to the new tag:
+1. **Set the release version source:**
+   - Preferred for Docker deployments: create and push the git tag you want to ship.
+   - Fallback/default: edit `backend/src/utils/Version.h` and change `MYCLOUD_VERSION` to the new tag:
    ```cpp
    #define MYCLOUD_VERSION "v1.1.0"
    ```
@@ -130,24 +133,28 @@ The backend exposes two admin-only endpoints:
 
 The default `docker-compose.yml` now enables one-click apply for the standard repo-based deployment.
 
-When an admin clicks **Apply update**, the backend runs this flow:
+When an admin clicks **Apply update**, the backend calls the dedicated `updater` container, which runs this flow:
 
 ```bash
 cd /opt/mycloud
+git fetch --tags
 git pull --ff-only
-docker compose up -d --build backend frontend nginx
+docker compose build backend frontend nginx
+docker compose up -d backend frontend nginx
 ```
 
-This works because the backend container now has:
+The updater derives `MYCLOUD_VERSION` from the latest reachable git tag and passes it into the backend build.
+
+This works because the updater container has:
 
 - the repo checkout mounted at `/opt/mycloud`
 - the host Docker socket mounted at `/var/run/docker.sock`
-- `git`, `docker`, and `docker compose` installed in the backend image
+- `git`, `docker`, `docker compose`, and `mysql` installed in the updater image
 
 ### Deployment requirements
 
 For the button to work reliably, deploy the app as a real git checkout of this repository on the
-server. The update command modifies that checkout in place.
+server. The updater modifies that checkout in place.
 
 If the server directory is not a git clone, or if the working tree has local uncommitted changes,
 the apply step will fail and the running containers will stay on the current version.
@@ -165,6 +172,7 @@ docker compose up -d --build backend frontend nginx
 
 `docker-compose.yml` still exposes these knobs if you want to customize the apply flow:
 
+- `MYCLOUD_UPDATER_URL`
 - `MYCLOUD_UPDATE_COMMAND`
 - `MYCLOUD_UPDATE_LOG_PATH`
 - `MYCLOUD_UPDATE_SERVICES`

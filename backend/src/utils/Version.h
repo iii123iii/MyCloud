@@ -23,5 +23,7 @@
 // Version format: "v<major>.<minor>.<patch>"
 // The tag on GitHub must match this string exactly (including the leading "v").
 //
+#ifndef MYCLOUD_VERSION
 #define MYCLOUD_VERSION     "v1.1.0"
+#endif
 #define MYCLOUD_GITHUB_REPO "iii123iii/MyCloud"

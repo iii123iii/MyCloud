@@ -67,9 +67,10 @@ Supported values visible in [main.cpp](/C:/Users/omrio/Desktop/Projects/mycloud/
 
 Other values used by the Docker setup:
 
+- `MYCLOUD_UPDATER_URL` to route admin apply requests to the dedicated updater container
 - `MASTER_ENCRYPTION_KEY` or `MASTER_ENCRYPTION_KEY_FILE`
 - `STORAGE_PATH`
-- `MYCLOUD_UPDATE_COMMAND` for the admin apply command
+- `MYCLOUD_UPDATE_COMMAND` for the legacy in-container admin apply command
 - `MYCLOUD_UPDATE_LOG_PATH` to control where detached update command output is written
 - `MYCLOUD_UPDATE_SERVICES` to control which compose services are rebuilt on apply
 
@@ -135,5 +136,5 @@ In Docker Compose, these are mounted into MariaDB automatically.
 - public share routes under `/api/s/*` are intentionally unauthenticated
 - uploads allow large bodies and stream through the backend
 - the backend assumes MariaDB and local file storage are available
-- one-click admin updates in the stock Docker deployment depend on the host repo being mounted at
-  `/opt/mycloud` and the Docker socket being mounted into the backend container
+- one-click admin updates in the stock Docker deployment call the dedicated `updater` container
+  over `MYCLOUD_UPDATER_URL`

@@ -18,12 +18,17 @@ find_path(HIREDIS_INCLUDE hiredis/hiredis.h REQUIRED)
 file(GLOB_RECURSE SOURCES src/*.cpp)
 
 add_executable(mycloud_backend ${SOURCES})
+set(MYCLOUD_VERSION_OVERRIDE "" CACHE STRING "Version string embedded in the backend binary")
 
 target_include_directories(mycloud_backend PRIVATE
     src
     ${HIREDIS_INCLUDE}
     /usr/local/include  # jwt-cpp
 )
+
+if(MYCLOUD_VERSION_OVERRIDE)
+    target_compile_definitions(mycloud_backend PRIVATE MYCLOUD_VERSION="${MYCLOUD_VERSION_OVERRIDE}")
+endif()
 
 target_link_libraries(mycloud_backend PRIVATE
     Drogon::Drogon

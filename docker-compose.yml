@@ -20,7 +20,10 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.1.0}
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
@@ -35,8 +38,35 @@ services:
       MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/data/logs/update.log}
       MYCLOUD_PROJECT_DIR: /opt/mycloud
       MYCLOUD_UPDATE_SERVICES: "${MYCLOUD_UPDATE_SERVICES:-backend frontend nginx}"
+      MYCLOUD_UPDATER_URL: "${MYCLOUD_UPDATER_URL:-http://updater:9999}"
     volumes:
       - file_storage:/data/files
+      - logs:/data/logs
+      - secrets:/run/secrets:ro
+      - ./:/opt/mycloud
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  updater:
+    build: ./updater
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_NAME: mycloud
+      DB_USER: mycloud
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      MYCLOUD_PROJECT_DIR: /opt/mycloud
+      MYCLOUD_UPDATE_SERVICES: "${MYCLOUD_UPDATE_SERVICES:-backend frontend nginx}"
+      MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/data/logs/update.log}
+      UPDATER_PORT: 9999
+    volumes:
       - logs:/data/logs
       - secrets:/run/secrets:ro
       - ./:/opt/mycloud
