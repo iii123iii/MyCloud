@@ -1,5 +1,4 @@
 services:
-
   # ── Runs once on first boot, generates all secrets into a named volume ────────
   init:
     build: ./init
@@ -23,7 +22,7 @@ services:
     build:
       context: ./backend
       args:
-        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.1.0}
+        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.1.1}
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
@@ -123,5 +122,5 @@ volumes:
   db_data:
   redis_data:
   ssl_certs:
-  secrets:      # persisted across restarts — secrets never regenerate
-  logs:         # persisted update logs — survives container restarts and reboots
+  secrets: # persisted across restarts — secrets never regenerate
+  logs: # persisted update logs — survives container restarts and reboots
