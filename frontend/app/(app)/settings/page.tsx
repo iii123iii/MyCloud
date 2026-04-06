@@ -154,7 +154,7 @@ export default function SettingsPage() {
 
       <Card className="border-destructive/40">
         <CardHeader>
-          <CardTitle className="text-destructive">Delete account</CardTitle>
+          <CardTitle>Delete account</CardTitle>
           <CardDescription>
             Permanently remove your account and delete all of your files and folders.
           </CardDescription>
