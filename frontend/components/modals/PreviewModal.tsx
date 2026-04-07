@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Download, X } from "lucide-react";
+import { AlertCircle, Download, Loader2, X } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { files as filesApi, tokenStore } from "@/lib/api";
 import {
@@ -177,6 +177,7 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
   const [spreadsheetData, setSpreadsheetData]     = useState<Record<string, { rows: string[][]; truncated: boolean }> | null>(null);
   const [docHtml, setDocHtml]                     = useState<string | null>(null);
   const [docError, setDocError]                   = useState<string | null>(null);
+  const [fetchError, setFetchError]               = useState<string | null>(null);
   const [loading, setLoading]                     = useState(true);
   const blobUrlRef = useRef<string | null>(null);
 
@@ -190,6 +191,7 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
     setSpreadsheetData(null);
     setDocHtml(null);
     setDocError(null);
+    setFetchError(null);
 
     const token = tokenStore.getAccess();
     const mime = file.mime_type;
@@ -267,7 +269,10 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
         blobUrlRef.current = url;
         setBlobUrl(url);
       })
-      .catch(console.error)
+      .catch((err) => {
+        console.error(err);
+        setFetchError("Failed to load preview. The file may be unavailable or too large to display.");
+      })
       .finally(() => setLoading(false));
 
     return () => {
@@ -317,20 +322,54 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
         </DialogHeader>
 
         <div className="flex-1 overflow-auto min-h-0 p-4 flex items-center justify-center bg-muted/20">
+          {/* Loading spinner */}
           {loading && (
-            <p className="text-muted-foreground text-sm">Loading preview…</p>
-          )}
-
-          {!loading && !isPreviewable(mime) && (
-            <div className="text-center">
-              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+            <div className="flex flex-col items-center gap-3 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <p className="text-sm">Loading preview…</p>
             </div>
           )}
 
-          {/* Images */}
+          {/* Fetch error */}
+          {!loading && fetchError && (
+            <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+              <AlertCircle className="h-8 w-8 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">{fetchError}</p>
+              <Button variant="outline" size="sm" onClick={handleDownload}>
+                <Download className="h-4 w-4 mr-1.5" />
+                Download instead
+              </Button>
+            </div>
+          )}
+
+          {!loading && !fetchError && !isPreviewable(mime) && (
+            <div className="flex flex-col items-center gap-2 text-center">
+              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+              <Button variant="outline" size="sm" onClick={handleDownload}>
+                <Download className="h-4 w-4 mr-1.5" />
+                Download
+              </Button>
+            </div>
+          )}
+
+          {/* Images — checkerboard bg so transparent PNGs look correct */}
           {!loading && blobUrl && mime.startsWith("image/") && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={blobUrl} alt={file.name} className="max-w-full max-h-full object-contain rounded" />
+            <div
+              className="w-full h-full flex items-center justify-center rounded"
+              style={{
+                backgroundImage:
+                  "linear-gradient(45deg,#d1d5db 25%,transparent 25%)," +
+                  "linear-gradient(-45deg,#d1d5db 25%,transparent 25%)," +
+                  "linear-gradient(45deg,transparent 75%,#d1d5db 75%)," +
+                  "linear-gradient(-45deg,transparent 75%,#d1d5db 75%)",
+                backgroundSize: "16px 16px",
+                backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+                backgroundColor: "#f9fafb",
+              }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={blobUrl} alt={file.name} className="max-w-full max-h-full object-contain drop-shadow-sm" />
+            </div>
           )}
 
           {/* Videos */}

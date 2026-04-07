@@ -84,8 +84,12 @@ done
 
 echo ""
 echo "── Building services: $SERVICES ─────────────────────────────"
+# --parallel builds all services simultaneously instead of sequentially.
+# DOCKER_BUILDKIT=1 is the default on modern Docker but set explicitly for
+# older installations to ensure layer caching and fast incremental builds.
+export DOCKER_BUILDKIT=1
 # shellcheck disable=SC2086
-docker compose build $SERVICES
+docker compose build --parallel $SERVICES
 
 echo ""
 echo "── Restarting services: $SERVICES ───────────────────────────"
