@@ -76,6 +76,7 @@ export function UpdateChecker() {
             setApplyMsg({ ok: false, text: data.update_status_message });
           } else if (data.update_status === "succeeded") {
             setApplyMsg({ ok: true, text: data.update_status_message });
+            setInfo((prev) => prev ? { ...prev, update_available: false } : prev);
           }
         }
       })
@@ -118,6 +119,8 @@ export function UpdateChecker() {
             setApplyMsg({ ok: false, text: data.update_status_message });
           } else if (data.update_status === "succeeded") {
             setApplyMsg({ ok: true, text: data.update_status_message });
+            // The update was applied — clear the "update available" banner immediately.
+            setInfo((current) => current ? { ...current, update_available: false } : current);
           }
         }
       } catch {
