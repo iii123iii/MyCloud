@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 
-	"golang.org/x/crypto/bcrypt"
+	"github.com/iii123iii/mycloud/backend/internal/utils"
 )
 
 // GenerateShareToken returns a cryptographically random 32-byte hex token.
@@ -16,16 +16,13 @@ func GenerateShareToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// HashSharePassword bcrypt-hashes a share password.
+// HashSharePassword hashes a share password using PBKDF2-HMAC-SHA256,
+// identical to the regular user password hashing for consistency with C++ backend.
 func HashSharePassword(password string) (string, error) {
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(h), nil
+	return utils.HashPassword(password)
 }
 
-// VerifySharePassword reports whether password matches the stored hash.
+// VerifySharePassword reports whether password matches the stored PBKDF2 hash.
 func VerifySharePassword(password, hash string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	return utils.VerifyPassword(password, hash)
 }
