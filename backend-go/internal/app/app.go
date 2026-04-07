@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,11 @@ type App struct {
 	Router   chi.Router
 	Client   *http.Client
 	StartUTC time.Time
+
+	// updateMu guards the fields below, which track activity-log writes for updates.
+	updateMu              sync.Mutex
+	updateStarted         bool   // true once an apply was triggered in this session
+	updateCompletionLogged bool  // true once a succeeded/failed log entry was written
 }
 
 func New(cfg config.Config) (http.Handler, func(), error) {

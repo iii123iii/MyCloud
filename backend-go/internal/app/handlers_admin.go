@@ -306,11 +306,31 @@ func (a *App) handleAdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 			var status map[string]any
 			if json.NewDecoder(resp.Body).Decode(&status) == nil {
 				info["update_in_progress"] = status["in_progress"]
-				if v, ok := status["status"].(string); ok {
-					info["update_status"] = v
+				statusStr, _ := status["status"].(string)
+				if statusStr != "" {
+					info["update_status"] = statusStr
 				}
 				if v, ok := status["message"].(string); ok && v != "" {
 					info["update_status_message"] = v
+				}
+
+				// Write a one-time activity log entry when the update finishes.
+				if (statusStr == "succeeded" || statusStr == "failed") {
+					a.updateMu.Lock()
+					shouldLog := a.updateStarted && !a.updateCompletionLogged
+					if shouldLog {
+						a.updateCompletionLogged = true
+					}
+					a.updateMu.Unlock()
+					if shouldLog {
+						action := "update_succeeded"
+						if statusStr == "failed" {
+							action = "update_failed"
+						}
+						uid := userIDFrom(r)
+						msg, _ := status["message"].(string)
+						writeActivity(r.Context(), a.DB, &uid, action, "system", "", clientIP(r), map[string]any{"message": msg})
+					}
 				}
 			}
 		}
@@ -353,6 +373,17 @@ func (a *App) handleAdminUpdateApply(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, resp.StatusCode, "updater_error", message)
 		return
 	}
+	// Record the update start in the activity log and mark this session as having started one.
+	uid := userIDFrom(r)
+	writeActivity(r.Context(), a.DB, &uid, "update_started", "system", payload["target_version"], clientIP(r), map[string]any{
+		"target_version":  payload["target_version"],
+		"current_version": payload["current_version"],
+	})
+	a.updateMu.Lock()
+	a.updateStarted = true
+	a.updateCompletionLogged = false
+	a.updateMu.Unlock()
+
 	httpapi.JSON(w, http.StatusAccepted, map[string]any{"message": message}, nil)
 }
 

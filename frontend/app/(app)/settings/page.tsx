@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -16,6 +17,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { formatBytes } from "@/lib/format";
 
 const pwSchema = z.object({
@@ -31,7 +41,7 @@ type PwForm = z.infer<typeof pwSchema>;
 const deleteSchema = z.object({
   password: z.string().min(1, "Current password required"),
   confirm: z.string().refine((value) => value === "DELETE", {
-    message: 'Type DELETE to confirm',
+    message: 'You must type DELETE (all caps)',
   }),
 });
 type DeleteForm = {
@@ -41,7 +51,9 @@ type DeleteForm = {
 
 export default function SettingsPage() {
   const router = useRouter();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const { data: user } = useSWR("me", authApi.me);
+
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<PwForm>({
     resolver: zodResolver(pwSchema),
   });
@@ -67,6 +79,7 @@ export default function SettingsPage() {
       await authApi.deleteAccount({ password: data.password });
       tokenStore.clear();
       resetDelete();
+      setDeleteDialogOpen(false);
       toast.success("Account deleted");
       router.replace("/login");
     } catch (err: unknown) {
@@ -152,39 +165,80 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Danger zone — just a button, form is in a dialog */}
       <Card className="border-destructive/40">
         <CardHeader>
-          <CardTitle>Delete account</CardTitle>
+          <CardTitle className="text-destructive">Danger zone</CardTitle>
           <CardDescription>
-            Permanently remove your account and delete all of your files and folders.
+            Permanently remove your account and all of your files, folders, and shares.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <Alert variant="destructive">
+        <CardContent>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              resetDelete();
+              setDeleteDialogOpen(true);
+            }}
+          >
+            Delete account
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* ── Delete-account confirmation dialog ── */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              Delete your account
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete your account, all uploaded files, folders, shares, and
+              trash. <strong>This cannot be undone.</strong>
+            </DialogDescription>
+          </DialogHeader>
+
+          <Alert variant="destructive" className="mt-1">
             <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>This action cannot be undone</AlertTitle>
+            <AlertTitle>You will lose everything</AlertTitle>
             <AlertDescription>
-              Your account, stored files, folders, shares, and trash will be permanently deleted.
+              All your data will be wiped from the server immediately.
             </AlertDescription>
           </Alert>
 
-          <form onSubmit={handleDeleteSubmit(onDeleteAccount)} className="space-y-4">
+          <form onSubmit={handleDeleteSubmit(onDeleteAccount)} className="space-y-4 mt-2">
             <div className="space-y-1.5">
-              <Label htmlFor="delete_password">Current password</Label>
-              <Input id="delete_password" type="password" {...registerDelete("password")} />
+              <Label htmlFor="delete_password">Enter your password</Label>
+              <Input id="delete_password" type="password" autoComplete="current-password" {...registerDelete("password")} />
               {deleteErrors.password && <p className="text-xs text-destructive">{deleteErrors.password.message}</p>}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="delete_confirm">Type DELETE to confirm</Label>
-              <Input id="delete_confirm" autoComplete="off" {...registerDelete("confirm")} />
+              <Label htmlFor="delete_confirm">
+                Type <span className="font-mono font-bold tracking-widest">DELETE</span> to confirm
+              </Label>
+              <Input
+                id="delete_confirm"
+                autoComplete="off"
+                placeholder="DELETE"
+                className="font-mono tracking-widest"
+                {...registerDelete("confirm")}
+              />
               {deleteErrors.confirm && <p className="text-xs text-destructive">{deleteErrors.confirm.message}</p>}
             </div>
-            <Button type="submit" variant="destructive" disabled={isDeleting}>
-              {isDeleting ? "Deleting account..." : "Delete account"}
-            </Button>
+
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" type="button" />}>
+                Cancel
+              </DialogClose>
+              <Button type="submit" variant="destructive" disabled={isDeleting}>
+                {isDeleting ? "Deleting…" : "Delete my account"}
+              </Button>
+            </DialogFooter>
           </form>
-        </CardContent>
-      </Card>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

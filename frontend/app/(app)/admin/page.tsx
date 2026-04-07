@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { admin as adminApi } from "@/lib/api";
+import { admin as adminApi, auth as authApi } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatsCards } from "@/components/admin/StatsCards";
 import { UserTable } from "@/components/admin/UserTable";
@@ -10,9 +12,18 @@ import { UpdateChecker } from "@/components/admin/UpdateChecker";
 import { Shield } from "lucide-react";
 
 export default function AdminPage() {
+  const router = useRouter();
+  const { data: currentUser } = useSWR("me", authApi.me);
   const { data: stats, mutate: mutateStats } = useSWR("admin-stats", adminApi.stats);
   const { data: usersData, mutate: mutateUsers } = useSWR("admin-users", adminApi.users);
   const { data: logsData }  = useSWR("admin-logs", () => adminApi.logs(200));
+
+  // Redirect non-admins — the sidebar hides the link but a direct URL visit must also be blocked.
+  useEffect(() => {
+    if (currentUser && currentUser.role !== "admin") {
+      router.replace("/dashboard");
+    }
+  }, [currentUser, router]);
 
   return (
     <div className="p-6 space-y-6">

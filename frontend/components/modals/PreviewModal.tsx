@@ -303,10 +303,12 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
   };
 
   const mime = file.mime_type;
+  // Word docs get a full-page Google-Docs-style layout; everything else keeps the centred card layout.
+  const isDocPreview = PREVIEWABLE_WORD_TYPES.has(mime);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="max-w-5xl w-full max-h-[90vh] flex flex-col p-0 gap-0">
+      <DialogContent showCloseButton={false} className="max-w-6xl w-[95vw] max-h-[95vh] flex flex-col p-0 gap-0">
         <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0">
           <DialogTitle className="text-base font-medium truncate pr-4">{file.name}</DialogTitle>
           <div className="flex items-center gap-2 shrink-0">
@@ -321,7 +323,12 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-auto min-h-0 p-4 flex items-center justify-center bg-muted/20">
+        {/* ── Doc preview: Google-Docs-style scrollable paper ── */}
+        <div className={`flex-1 min-h-0 overflow-auto ${
+          isDocPreview
+            ? "bg-neutral-200 dark:bg-neutral-800 flex justify-center py-10 px-6"
+            : "p-4 flex items-center justify-center bg-muted/20"
+        }`}>
           {/* Loading spinner */}
           {loading && (
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
@@ -402,23 +409,35 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
             <SpreadsheetViewer data={spreadsheetData} />
           )}
 
-          {/* Word document → rendered HTML */}
+          {/* Word document → Google-Docs-style white paper */}
           {!loading && docHtml !== null && (
-            <div className="w-full h-full overflow-auto bg-white rounded border border-border p-8 max-w-3xl mx-auto
-              [&_h1]:text-2xl [&_h1]:font-bold [&_h1]:mt-6 [&_h1]:mb-3
-              [&_h2]:text-xl  [&_h2]:font-bold [&_h2]:mt-5 [&_h2]:mb-2
-              [&_h3]:text-lg  [&_h3]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2
-              [&_p]:mb-3 [&_p]:leading-relaxed
-              [&_ul]:list-disc [&_ul]:ml-6 [&_ul]:mb-3
-              [&_ol]:list-decimal [&_ol]:ml-6 [&_ol]:mb-3
-              [&_li]:mb-1
-              [&_strong]:font-semibold
-              [&_em]:italic
-              [&_a]:text-blue-600 [&_a]:underline
-              [&_blockquote]:border-l-4 [&_blockquote]:border-border [&_blockquote]:pl-4 [&_blockquote]:italic [&_blockquote]:text-muted-foreground [&_blockquote]:my-3
-              [&_table]:border-collapse [&_table]:w-full [&_table]:mb-4
-              [&_td]:border [&_td]:border-border [&_td]:px-3 [&_td]:py-1.5 [&_td]:text-sm
-              [&_th]:border [&_th]:border-border [&_th]:px-3 [&_th]:py-1.5 [&_th]:text-sm [&_th]:font-semibold [&_th]:bg-muted"
+            <div
+              className="
+                w-full max-w-[860px] self-start
+                bg-white dark:bg-neutral-900
+                shadow-xl rounded-sm
+                px-16 py-14 text-[15px] leading-relaxed text-gray-900 dark:text-gray-100
+                [&_h1]:text-3xl  [&_h1]:font-bold    [&_h1]:mt-8  [&_h1]:mb-4
+                [&_h2]:text-2xl  [&_h2]:font-bold    [&_h2]:mt-7  [&_h2]:mb-3
+                [&_h3]:text-xl   [&_h3]:font-semibold [&_h3]:mt-6  [&_h3]:mb-2
+                [&_h4]:text-lg   [&_h4]:font-semibold [&_h4]:mt-4  [&_h4]:mb-1
+                [&_p]:mb-4 [&_p]:leading-[1.75]
+                [&_ul]:list-disc   [&_ul]:ml-7 [&_ul]:mb-4
+                [&_ol]:list-decimal [&_ol]:ml-7 [&_ol]:mb-4
+                [&_li]:mb-1.5
+                [&_strong]:font-semibold
+                [&_em]:italic
+                [&_u]:underline
+                [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2
+                [&_blockquote]:border-l-4 [&_blockquote]:border-gray-300 [&_blockquote]:pl-5 [&_blockquote]:italic [&_blockquote]:text-gray-500 [&_blockquote]:my-4
+                [&_hr]:my-6 [&_hr]:border-gray-200
+                [&_pre]:bg-gray-50 [&_pre]:rounded [&_pre]:p-4 [&_pre]:text-sm [&_pre]:font-mono [&_pre]:overflow-x-auto [&_pre]:mb-4
+                [&_code]:bg-gray-100 [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sm [&_code]:font-mono
+                [&_img]:max-w-full [&_img]:rounded
+                [&_table]:border-collapse [&_table]:w-full [&_table]:mb-6 [&_table]:text-sm
+                [&_td]:border [&_td]:border-gray-200 [&_td]:px-4 [&_td]:py-2
+                [&_th]:border [&_th]:border-gray-200 [&_th]:px-4 [&_th]:py-2 [&_th]:font-semibold [&_th]:bg-gray-50 [&_th]:text-left
+              "
               // mammoth generates sanitized HTML from trusted OOXML content
               dangerouslySetInnerHTML={{ __html: docHtml }}
             />
