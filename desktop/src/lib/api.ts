@@ -42,6 +42,15 @@ interface RequestOptions extends Omit<RequestInit, "headers"> {
   _attempt?: number;
 }
 
+interface ApiEnvelope<T> {
+  data?: T;
+  meta?: Record<string, unknown>;
+  error?: {
+    code?: string;
+    message?: string;
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  API Client                                                         */
 /* ------------------------------------------------------------------ */
@@ -132,8 +141,8 @@ export class ApiClient {
     if (!response.ok) {
       let message = response.statusText;
       try {
-        const json = (await response.json()) as { error?: string };
-        message = json.error || message;
+        const json = (await response.json()) as ApiEnvelope<unknown>;
+        message = json.error?.message || message;
       } catch {
         /* no json body */
       }
@@ -145,7 +154,8 @@ export class ApiClient {
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("application/json")) return null;
 
-    return response.json() as Promise<T>;
+    const body = (await response.json()) as ApiEnvelope<T>;
+    return (body.data ?? null) as T | null;
   }
 
   /* ---- auth ------------------------------------------------------ */
@@ -155,7 +165,7 @@ export class ApiClient {
       const response = await this.request<{
         access_token: string;
         refresh_token: string;
-      }>("/api/auth/refresh", {
+      }>("/api/v2/auth/refresh", {
         method: "POST",
         noAuth: true,
         body: JSON.stringify({ refresh_token: this.refreshToken }),
@@ -182,7 +192,7 @@ export class ApiClient {
     const tokens = await this.request<{
       access_token: string;
       refresh_token: string;
-    }>("/api/auth/login", {
+    }>("/api/v2/auth/login", {
       method: "POST",
       noAuth: true,
       body: JSON.stringify({
@@ -191,7 +201,7 @@ export class ApiClient {
       }),
     });
 
-    const me = await this.request<User>("/api/auth/me", {
+    const me = await this.request<User>("/api/v2/auth/me", {
       headers: { Authorization: `Bearer ${tokens!.access_token}` },
       noAuth: true,
     });
@@ -224,7 +234,7 @@ export class ApiClient {
     name: string,
     parentId: string | null = null,
   ): Promise<RemoteEntity> {
-    return (await this.request<RemoteEntity>("/api/folders", {
+    return (await this.request<RemoteEntity>("/api/v2/folders", {
       method: "POST",
       body: JSON.stringify({
         name,
@@ -251,7 +261,7 @@ export class ApiClient {
       form.append("folder_id", String(folderId));
     }
 
-    return (await this.request<RemoteEntity>("/api/files/upload", {
+    return (await this.request<RemoteEntity>("/api/v2/files:upload", {
       method: "POST",
       body: form,
     }))!;
@@ -263,7 +273,7 @@ export class ApiClient {
    */
   async deleteFile(id: string): Promise<void> {
     try {
-      await this.request(`/api/files/${id}`, { method: "DELETE" });
+      await this.request(`/api/v2/files/${id}`, { method: "DELETE" });
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 404) return;
       throw error;
@@ -276,7 +286,7 @@ export class ApiClient {
    */
   async deleteFolder(id: string): Promise<void> {
     try {
-      await this.request(`/api/folders/${id}`, { method: "DELETE" });
+      await this.request(`/api/v2/folders/${id}`, { method: "DELETE" });
     } catch (error: unknown) {
       if (error instanceof ApiError && error.status === 404) return;
       throw error;
@@ -288,7 +298,7 @@ export class ApiClient {
   /** Fetch used_bytes / quota_bytes / file_count / folder_count. */
   async getStorageStats(): Promise<StorageStats | null> {
     try {
-      return await this.request<StorageStats>("/api/storage/stats");
+      return await this.request<StorageStats>("/api/v2/storage/stats");
     } catch {
       return null;
     }

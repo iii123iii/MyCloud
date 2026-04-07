@@ -20,7 +20,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: ./backend-go
       args:
         # Single source of truth for the backend version embedded at build time.
         MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.1.3}
@@ -43,8 +43,6 @@ services:
       - file_storage:/data/files
       - logs:/data/logs
       - secrets:/run/secrets:ro
-      - ./:/opt/mycloud
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       init:
         condition: service_completed_successfully
@@ -99,8 +97,8 @@ services:
     volumes:
       - db_data:/var/lib/mysql
       - secrets:/run/secrets:ro
-      - ./backend/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql
-      - ./backend/migrations/002_performance_indexes.sql:/docker-entrypoint-initdb.d/002_performance_indexes.sql
+      - ./backend-go/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql
+      - ./backend-go/migrations/002_performance_indexes.sql:/docker-entrypoint-initdb.d/002_performance_indexes.sql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s

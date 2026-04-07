@@ -1,0 +1,11 @@
+version: "2"
+sql:
+  - engine: mysql
+    schema:
+      - migrations/001_initial.sql
+      - migrations/002_performance_indexes.sql
+    queries: internal/queries
+    gen:
+      go:
+        package: queries
+        out: internal/db/queries

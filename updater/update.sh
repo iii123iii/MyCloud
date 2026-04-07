@@ -64,7 +64,7 @@ elif [ -n "${DB_PASSWORD:-}" ]; then
 fi
 
 _found=0
-for _sql in "$PROJECT_DIR"/backend/migrations/*.sql; do
+for _sql in "$PROJECT_DIR"/backend-go/migrations/*.sql; do
   [ -f "$_sql" ] || continue
   _found=1
   echo "Applying migration: $(basename "$_sql")"

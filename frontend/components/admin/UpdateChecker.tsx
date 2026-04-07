@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { admin as adminApi } from "@/lib/api";
 import type { UpdateInfo } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,34 +16,60 @@ export function UpdateChecker() {
   const [applyMsg, setApplyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sawOffline, setSawOffline] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const logRef = useRef<HTMLDivElement>(null);
 
+  // Auto-scroll log to bottom whenever new lines arrive.
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logLines]);
+
+  // Poll status + log while an update is running.
   useEffect(() => {
     if (!awaitingRestart) {
       setSawOffline(false);
       return;
     }
 
-    const timer = window.setInterval(async () => {
+    const statusTimer = window.setInterval(async () => {
       try {
-        const data = await adminApi.checkUpdate();
+        const data = await adminApi.fetchUpdateStatus();
         if (sawOffline) {
           window.location.reload();
           return;
         }
-
-        setInfo(data);
+        setInfo((current) => current ? { ...current, ...data } : current);
         if (!data.update_in_progress) {
           setAwaitingRestart(false);
           if (data.update_status === "failed") {
             setApplyMsg({ ok: false, text: data.update_status_message });
+          } else if (data.update_status === "succeeded") {
+            setApplyMsg({ ok: true, text: data.update_status_message });
           }
         }
       } catch {
         setSawOffline(true);
       }
-    }, 3000);
+    }, 4000);
 
-    return () => window.clearInterval(timer);
+    // Poll the log separately — more frequently so output feels live.
+    const logTimer = window.setInterval(async () => {
+      try {
+        const data = await adminApi.fetchUpdateLog();
+        if (data?.lines?.length) {
+          setLogLines(data.lines);
+        }
+      } catch {
+        // ignore log fetch errors — status poll handles offline detection
+      }
+    }, 2000);
+
+    return () => {
+      window.clearInterval(statusTimer);
+      window.clearInterval(logTimer);
+    };
   }, [awaitingRestart, sawOffline]);
 
   async function handleCheck() {
@@ -69,14 +95,14 @@ export function UpdateChecker() {
 
     setApplying(true);
     setApplyMsg(null);
+    setLogLines([]);
     try {
-      const res = await adminApi.applyUpdate();
-      setInfo((current) => current ? {
-        ...current,
-        update_in_progress: true,
-        update_status: "running",
-        update_status_message: res.message,
-      } : current);
+      const res = await adminApi.applyUpdate(info?.latest);
+      setInfo((current) =>
+        current
+          ? { ...current, update_in_progress: true, update_status: "running", update_status_message: res.message }
+          : current
+      );
       setApplyMsg({ ok: true, text: res.message });
       setAwaitingRestart(true);
     } catch (err) {
@@ -97,8 +123,8 @@ export function UpdateChecker() {
     }
   }
 
-  const updateActionDisabled =
-    applying || awaitingRestart || Boolean(info?.update_in_progress);
+  const updateActionDisabled = applying || awaitingRestart || Boolean(info?.update_in_progress);
+  const updateRunning = awaitingRestart || info?.update_in_progress || info?.update_status === "running";
 
   return (
     <Card>
@@ -127,7 +153,7 @@ export function UpdateChecker() {
       <CardContent className="space-y-4">
         {info && (
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-muted-foreground">Running version</span>
+            <span className="text-muted-foreground">Running</span>
             <Badge variant="secondary">{info.current}</Badge>
             <span className="text-muted-foreground">Latest</span>
             <Badge variant={info.update_available ? "destructive" : "default"}>
@@ -136,7 +162,7 @@ export function UpdateChecker() {
           </div>
         )}
 
-        {info && !info.update_available && (
+        {info && !info.update_available && !updateRunning && (
           <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
             <CheckCircle2 className="h-4 w-4" />
             You&apos;re running the latest version.
@@ -189,43 +215,70 @@ export function UpdateChecker() {
                     Starting update...
                   </>
                 ) : updateActionDisabled ? (
-                  "Restarting..."
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Updating...
+                  </>
                 ) : (
                   <>Update to {info.latest}</>
                 )}
               </Button>
             )}
+          </div>
+        )}
 
-            {(awaitingRestart || info.update_in_progress || info.update_status === "running") && (
-              <div className="rounded-md border border-border/60 bg-background/70 p-3 text-sm text-muted-foreground">
-                {info.update_status_message || "Waiting for the backend to restart."}
-                {info.update_log_path && (
-                  <div className="mt-2 font-mono text-xs">{info.update_log_path}</div>
-                )}
-              </div>
-            )}
-
-            {info.update_status === "failed" && (
-              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-                <div>{info.update_status_message || "Update failed."}</div>
-                {info.update_log_path && (
-                  <div className="mt-2 font-mono text-xs">{info.update_log_path}</div>
-                )}
-              </div>
-            )}
-
-            {info.update_status === "succeeded" && !info.update_in_progress && (
-              <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
-                <div>{info.update_status_message}</div>
-                {info.update_log_path && (
-                  <div className="mt-2 font-mono text-xs">{info.update_log_path}</div>
-                )}
+        {/* Live log output while update is running */}
+        {updateRunning && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span>{sawOffline ? "Server restarting, waiting for it to come back…" : (info?.update_status_message || "Update in progress…")}</span>
+            </div>
+            {logLines.length > 0 && (
+              <div
+                ref={logRef}
+                className="rounded-md bg-black text-green-400 font-mono text-xs p-3 max-h-64 overflow-y-auto leading-relaxed"
+              >
+                {logLines.map((line, i) => (
+                  <div key={i}>{line || "\u00A0"}</div>
+                ))}
+                <div className="inline-block w-2 h-3.5 bg-green-400 animate-pulse ml-0.5 align-middle" />
               </div>
             )}
           </div>
         )}
 
-        {applyMsg && (
+        {/* Final status messages */}
+        {!updateRunning && info?.update_status === "failed" && (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            <div className="flex items-center gap-2 font-medium mb-1">
+              <AlertCircle className="h-4 w-4" />
+              Update failed
+            </div>
+            <div>{info.update_status_message || "Update failed."}</div>
+            {logLines.length > 0 && (
+              <div
+                ref={logRef}
+                className="mt-2 rounded bg-black text-red-300 font-mono text-xs p-2 max-h-48 overflow-y-auto leading-relaxed"
+              >
+                {logLines.map((line, i) => (
+                  <div key={i}>{line || "\u00A0"}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!updateRunning && info?.update_status === "succeeded" && (
+          <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
+            <div className="flex items-center gap-2 font-medium">
+              <CheckCircle2 className="h-4 w-4" />
+              {info.update_status_message || "Update succeeded."}
+            </div>
+          </div>
+        )}
+
+        {applyMsg && !updateRunning && info?.update_status !== "failed" && info?.update_status !== "succeeded" && (
           <div className={`flex items-start gap-2 rounded-md p-3 text-sm ${
             applyMsg.ok
               ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
@@ -253,6 +306,7 @@ export function UpdateChecker() {
             latest GitHub release.
           </p>
         )}
+
       </CardContent>
     </Card>
   );
