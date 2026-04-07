@@ -23,7 +23,7 @@ services:
       context: ./backend-go
       args:
         # Single source of truth for the backend version embedded at build time.
-        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.2.1}
+        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.2.2}
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
