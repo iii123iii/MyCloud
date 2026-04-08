@@ -20,11 +20,12 @@ services:
 
   backend:
     build:
-      context: ./backend-go
+      context: .
+      dockerfile: backend-go/Dockerfile
       args:
-        # Resolved from Git tags by the compose wrapper / updater scripts.
-        # You can still override it manually by exporting MYCLOUD_VERSION.
-        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-dev}
+        # Optional override. When unset, the backend Dockerfile resolves the
+        # version automatically from the checked-out Git state.
+        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-}
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306
