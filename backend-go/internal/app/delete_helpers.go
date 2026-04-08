@@ -83,7 +83,7 @@ func (a *App) restoreFolder(ctx context.Context, userID, folderID string) error 
 func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) error {
 	var path string
 	var size int64
-	err := a.DB.QueryRowContext(ctx, "SELECT storage_path, size_bytes FROM files WHERE id=? AND user_id=?", fileID, userID).Scan(&path, &size)
+	err := a.DB.QueryRowContext(ctx, "SELECT storage_path, size_bytes FROM files WHERE id=? AND user_id=? AND is_deleted=1", fileID, userID).Scan(&path, &size)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) 
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE id=? AND user_id=?", fileID, userID); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE id=? AND user_id=? AND is_deleted=1", fileID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE users SET used_bytes=GREATEST(0, used_bytes-?) WHERE id=?", size, userID); err != nil {
@@ -106,9 +106,19 @@ func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) 
 }
 
 func (a *App) permanentlyDeleteFolder(ctx context.Context, userID, folderID string) error {
+	var exists int
+	if err := a.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=1", folderID, userID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return sql.ErrNoRows
+	}
 	ids, err := a.collectFolderTree(ctx, userID, folderID)
 	if err != nil || len(ids) == 0 {
-		return err
+		if err != nil {
+			return err
+		}
+		return sql.ErrNoRows
 	}
 	ph, folderArgs := inClause(ids)
 

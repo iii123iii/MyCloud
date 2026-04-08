@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -130,9 +131,9 @@ func (a *App) handleStorageStats(w http.ResponseWriter, r *http.Request) {
 	_ = a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM files WHERE user_id=? AND is_deleted=0", userID).Scan(&filesCount)
 	_ = a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM folders WHERE user_id=? AND is_deleted=0", userID).Scan(&folderCount)
 	httpapi.JSON(w, http.StatusOK, map[string]any{
-		"used_bytes":  used,
-		"quota_bytes": quota,
-		"file_count":  filesCount,
+		"used_bytes":   used,
+		"quota_bytes":  quota,
+		"file_count":   filesCount,
 		"folder_count": folderCount,
 	}, nil)
 }
@@ -166,37 +167,80 @@ func (a *App) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	id := chi.URLParam(r, "id")
-	var payload struct {
-		Name      *string `json:"name"`
-		FolderID  *string `json:"folder_id"`
-		IsStarred *bool   `json:"is_starred"`
-	}
+	var payload map[string]json.RawMessage
 	if err := decodeJSON(r, &payload); err != nil {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
+	if len(payload) == 0 {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
+		return
+	}
 	switch {
-	case payload.IsStarred != nil:
-		_, err := a.DB.ExecContext(r.Context(), "UPDATE files SET is_starred=? WHERE id=? AND user_id=? AND is_deleted=0", *payload.IsStarred, id, userID)
+	case payload["is_starred"] != nil:
+		var isStarred bool
+		if err := json.Unmarshal(payload["is_starred"], &isStarred); err != nil {
+			httpapi.Error(w, http.StatusBadRequest, "validation_error", "is_starred must be a boolean")
+			return
+		}
+		res, err := a.DB.ExecContext(r.Context(), "UPDATE files SET is_starred=? WHERE id=? AND user_id=? AND is_deleted=0", isStarred, id, userID)
 		if err != nil {
 			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-	case payload.Name != nil:
-		name := strings.TrimSpace(*payload.Name)
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
+			return
+		}
+	case payload["name"] != nil:
+		var name string
+		if err := json.Unmarshal(payload["name"], &name); err != nil {
+			httpapi.Error(w, http.StatusBadRequest, "validation_error", "name must be a string")
+			return
+		}
+		name = strings.TrimSpace(name)
 		if name == "" {
 			httpapi.Error(w, http.StatusBadRequest, "validation_error", "File name is required")
 			return
 		}
-		_, err := a.DB.ExecContext(r.Context(), "UPDATE files SET name=? WHERE id=? AND user_id=? AND is_deleted=0", name, id, userID)
+		res, err := a.DB.ExecContext(r.Context(), "UPDATE files SET name=? WHERE id=? AND user_id=? AND is_deleted=0", name, id, userID)
 		if err != nil {
 			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-	case payload.FolderID != nil:
-		_, err := a.DB.ExecContext(r.Context(), "UPDATE files SET folder_id=? WHERE id=? AND user_id=? AND is_deleted=0", payload.FolderID, id, userID)
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
+			return
+		}
+	case payload["folder_id"] != nil:
+		var folderID *string
+		if string(payload["folder_id"]) != "null" {
+			var raw string
+			if err := json.Unmarshal(payload["folder_id"], &raw); err != nil {
+				httpapi.Error(w, http.StatusBadRequest, "validation_error", "folder_id must be a string or null")
+				return
+			}
+			raw = strings.TrimSpace(raw)
+			if raw != "" {
+				var exists int
+				if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=0", raw, userID).Scan(&exists); err != nil {
+					httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+					return
+				}
+				if exists == 0 {
+					httpapi.Error(w, http.StatusBadRequest, "invalid_parent", "Folder not found")
+					return
+				}
+				folderID = &raw
+			}
+		}
+		res, err := a.DB.ExecContext(r.Context(), "UPDATE files SET folder_id=? WHERE id=? AND user_id=? AND is_deleted=0", nullableStringPtr(folderID), id, userID)
 		if err != nil {
 			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
 	default:

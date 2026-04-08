@@ -100,6 +100,19 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
+	if len(payload) == 0 {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
+		return
+	}
+	var exists int
+	if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM users WHERE id=?", id).Scan(&exists); err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	if exists == 0 {
+		httpapi.Error(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
 	if password, ok := payload["password"].(string); ok && password != "" {
 		hash, err := auth.HashPassword(password)
 		if err != nil {
@@ -112,13 +125,26 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if role, ok := payload["role"].(string); ok && role != "" {
-		_, _ = a.DB.ExecContext(r.Context(), "UPDATE users SET role=? WHERE id=?", role, id)
+		if role != "admin" && role != "user" {
+			httpapi.Error(w, http.StatusBadRequest, "validation_error", "Invalid role")
+			return
+		}
+		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET role=? WHERE id=?", role, id); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
 	}
 	if quota, ok := payload["quota_bytes"].(float64); ok {
-		_, _ = a.DB.ExecContext(r.Context(), "UPDATE users SET quota_bytes=? WHERE id=?", int64(quota), id)
+		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET quota_bytes=? WHERE id=?", int64(quota), id); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
 	}
 	if active, ok := payload["is_active"].(bool); ok {
-		_, _ = a.DB.ExecContext(r.Context(), "UPDATE users SET is_active=? WHERE id=?", active, id)
+		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET is_active=? WHERE id=?", active, id); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
 	}
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Updated"}, nil)
 }
@@ -315,7 +341,7 @@ func (a *App) handleAdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Write a one-time activity log entry when the update finishes.
-				if (statusStr == "succeeded" || statusStr == "failed") {
+				if statusStr == "succeeded" || statusStr == "failed" {
 					a.updateMu.Lock()
 					shouldLog := a.updateStarted && !a.updateCompletionLogged
 					if shouldLog {

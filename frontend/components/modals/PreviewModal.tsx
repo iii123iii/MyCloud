@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { AlertCircle, Download, Loader2, X } from "lucide-react";
+import { AlertCircle, ChevronLeft, ChevronRight, Download, Loader2, X } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { files as filesApi, tokenStore } from "@/lib/api";
 import {
@@ -17,8 +17,12 @@ import type { FileItem } from "@/lib/types";
 
 interface Props {
   file: FileItem;
+  /** Full list of files in the current view — used for prev/next navigation. */
+  files?: FileItem[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Called when the user navigates to a different file. */
+  onNavigate?: (file: FileItem) => void;
 }
 
 // Maps MIME types to shiki language identifiers
@@ -169,7 +173,7 @@ function SpreadsheetViewer({ data }: { data: Record<string, { rows: string[][]; 
 
 // ─── Main modal ─────────────────────────────────────────────────────────────
 
-export function PreviewModal({ file, open, onOpenChange }: Props) {
+export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate }: Props) {
   const [blobUrl, setBlobUrl]                     = useState<string | null>(null);
   const [textContent, setTextContent]             = useState<string | null>(null);
   const [highlightedHtml, setHighlightedHtml]     = useState<string | null>(null);
@@ -181,6 +185,27 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
   const [loading, setLoading]                     = useState(true);
   const blobUrlRef = useRef<string | null>(null);
 
+  // ── Compute navigation neighbours (only among previewable files) ─────────
+  const previewableFiles = files.filter((f) => isPreviewable(f.mime_type));
+  const currentIndex     = previewableFiles.findIndex((f) => f.id === file.id);
+  const prevFile         = currentIndex > 0 ? previewableFiles[currentIndex - 1] : null;
+  const nextFile         = currentIndex < previewableFiles.length - 1 ? previewableFiles[currentIndex + 1] : null;
+  const hasNav           = previewableFiles.length > 1;
+
+  // ── Keyboard navigation ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!open || !onNavigate) return;
+    const handleKey = (e: KeyboardEvent) => {
+      // Don't hijack arrow keys while the user is typing in an input / textarea.
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "ArrowLeft"  && prevFile) onNavigate(prevFile);
+      if (e.key === "ArrowRight" && nextFile) onNavigate(nextFile);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [open, prevFile, nextFile, onNavigate]);
+
+  // ── Fetch preview content ─────────────────────────────────────────────────
   useEffect(() => {
     if (!open) return;
     setLoading(true);
@@ -200,6 +225,9 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Preview request failed with status ${res.status}`);
+        }
         // ── Spreadsheets ──────────────────────────────────────────────────
         if (PREVIEWABLE_SPREADSHEET_TYPES.has(mime)) {
           const buffer = await res.arrayBuffer();
@@ -298,6 +326,7 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
       a.click();
       URL.revokeObjectURL(url);
     } catch {
+      setFetchError("Download failed.");
       // Silently fail — user sees error in network tab
     }
   };
@@ -312,8 +341,16 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
         showCloseButton={false}
         className="!fixed !inset-0 !top-0 !left-0 !translate-x-0 !translate-y-0 !w-screen !h-screen !max-w-none !max-h-none !rounded-none flex flex-col p-0 gap-0"
       >
-        <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0">
-          <DialogTitle className="text-base font-medium truncate pr-4">{file.name}</DialogTitle>
+        {/* ── Header ── */}
+        <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0 bg-background">
+          <div className="flex items-center gap-3 min-w-0">
+            <DialogTitle className="text-base font-medium truncate">{file.name}</DialogTitle>
+            {hasNav && (
+              <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                {currentIndex + 1} / {previewableFiles.length}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
             <Button variant="outline" size="sm" onClick={handleDownload}>
@@ -326,152 +363,184 @@ export function PreviewModal({ file, open, onOpenChange }: Props) {
           </div>
         </DialogHeader>
 
-        {/* ── Doc preview: Google-Docs-style scrollable paper ── */}
-        <div className={`flex-1 min-h-0 overflow-auto ${
-          isDocPreview
-            ? "bg-neutral-200 dark:bg-neutral-800 flex justify-center py-10 px-6"
-            : "p-4 flex items-center justify-center bg-muted/20"
-        }`}>
-          {/* Loading spinner */}
-          {loading && (
-            <div className="flex flex-col items-center gap-3 text-muted-foreground">
-              <Loader2 className="h-8 w-8 animate-spin" />
-              <p className="text-sm">Loading preview…</p>
-            </div>
-          )}
+        {/* ── Content area (relative so nav arrows can be absolutely positioned) ── */}
+        <div className="relative flex-1 min-h-0 flex">
 
-          {/* Fetch error */}
-          {!loading && fetchError && (
-            <div className="flex flex-col items-center gap-3 text-center max-w-sm">
-              <AlertCircle className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">{fetchError}</p>
-              <Button variant="outline" size="sm" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-1.5" />
-                Download instead
-              </Button>
-            </div>
-          )}
-
-          {!loading && !fetchError && !isPreviewable(mime) && (
-            <div className="flex flex-col items-center gap-2 text-center">
-              <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
-              <Button variant="outline" size="sm" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-1.5" />
-                Download
-              </Button>
-            </div>
-          )}
-
-          {/* Images — checkerboard bg so transparent PNGs look correct */}
-          {!loading && blobUrl && mime.startsWith("image/") && (
-            <div
-              className="w-full h-full flex items-center justify-center rounded"
-              style={{
-                backgroundImage:
-                  "linear-gradient(45deg,#d1d5db 25%,transparent 25%)," +
-                  "linear-gradient(-45deg,#d1d5db 25%,transparent 25%)," +
-                  "linear-gradient(45deg,transparent 75%,#d1d5db 75%)," +
-                  "linear-gradient(-45deg,transparent 75%,#d1d5db 75%)",
-                backgroundSize: "16px 16px",
-                backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
-                backgroundColor: "#f9fafb",
-              }}
+          {/* Prev arrow */}
+          {hasNav && prevFile && onNavigate && (
+            <button
+              onClick={() => onNavigate(prevFile)}
+              className="absolute left-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors shadow-lg"
+              aria-label="Previous file"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={blobUrl} alt={file.name} className="max-w-full max-h-full object-contain drop-shadow-sm" />
-            </div>
+              <ChevronLeft className="h-6 w-6" />
+            </button>
           )}
 
-          {/* Videos */}
-          {!loading && blobUrl && mime.startsWith("video/") && (
-            <video src={blobUrl} controls className="max-w-full max-h-full rounded" />
+          {/* Next arrow */}
+          {hasNav && nextFile && onNavigate && (
+            <button
+              onClick={() => onNavigate(nextFile)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors shadow-lg"
+              aria-label="Next file"
+            >
+              <ChevronRight className="h-6 w-6" />
+            </button>
           )}
 
-          {/* Audio */}
-          {!loading && blobUrl && mime.startsWith("audio/") && (
-            <div className="w-full max-w-lg space-y-3">
-              <p className="text-sm font-medium text-center">{file.name}</p>
-              <audio src={blobUrl} controls className="w-full" />
-            </div>
-          )}
+          {/* ── Doc preview: Google-Docs-style scrollable paper ── */}
+          <div className={`flex-1 min-h-0 overflow-auto ${
+            isDocPreview
+              ? "bg-neutral-200 dark:bg-neutral-800 flex justify-center py-10 px-6"
+              : "p-4 flex items-center justify-center bg-muted/20"
+          }`}>
 
-          {/* PDF */}
-          {!loading && blobUrl && mime === "application/pdf" && (
-            <iframe src={blobUrl} className="w-full h-full min-h-[60vh] rounded border" title={file.name} />
-          )}
+            {/* Loading spinner */}
+            {loading && (
+              <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <p className="text-sm">Loading preview…</p>
+              </div>
+            )}
 
-          {/* CSV → table */}
-          {!loading && csvData && (
-            <div className="w-full h-full flex flex-col rounded border border-border overflow-hidden">
-              <SheetTable sheetData={csvData.rows} truncated={csvData.truncated} />
-            </div>
-          )}
+            {/* Fetch error */}
+            {!loading && fetchError && (
+              <div className="flex flex-col items-center gap-3 text-center max-w-sm">
+                <AlertCircle className="h-8 w-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">{fetchError}</p>
+                <Button variant="outline" size="sm" onClick={handleDownload}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Download instead
+                </Button>
+              </div>
+            )}
 
-          {/* Spreadsheet (xlsx / xls / ods) → tabbed table */}
-          {!loading && spreadsheetData && (
-            <SpreadsheetViewer data={spreadsheetData} />
-          )}
+            {!loading && !fetchError && !isPreviewable(mime) && (
+              <div className="flex flex-col items-center gap-2 text-center">
+                <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
+                <Button variant="outline" size="sm" onClick={handleDownload}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Download
+                </Button>
+              </div>
+            )}
 
-          {/* Word document → Google-Docs-style white paper */}
-          {!loading && docHtml !== null && (
-            <div
-              className="
-                w-full max-w-[860px] self-start
-                bg-white dark:bg-neutral-900
-                shadow-xl rounded-sm
-                px-16 py-14 text-[15px] leading-relaxed text-gray-900 dark:text-gray-100
-                [&_h1]:text-3xl  [&_h1]:font-bold    [&_h1]:mt-8  [&_h1]:mb-4
-                [&_h2]:text-2xl  [&_h2]:font-bold    [&_h2]:mt-7  [&_h2]:mb-3
-                [&_h3]:text-xl   [&_h3]:font-semibold [&_h3]:mt-6  [&_h3]:mb-2
-                [&_h4]:text-lg   [&_h4]:font-semibold [&_h4]:mt-4  [&_h4]:mb-1
-                [&_p]:mb-4 [&_p]:leading-[1.75]
-                [&_ul]:list-disc   [&_ul]:ml-7 [&_ul]:mb-4
-                [&_ol]:list-decimal [&_ol]:ml-7 [&_ol]:mb-4
-                [&_li]:mb-1.5
-                [&_strong]:font-semibold
-                [&_em]:italic
-                [&_u]:underline
-                [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2
-                [&_blockquote]:border-l-4 [&_blockquote]:border-gray-300 [&_blockquote]:pl-5 [&_blockquote]:italic [&_blockquote]:text-gray-500 [&_blockquote]:my-4
-                [&_hr]:my-6 [&_hr]:border-gray-200
-                [&_pre]:bg-gray-50 [&_pre]:rounded [&_pre]:p-4 [&_pre]:text-sm [&_pre]:font-mono [&_pre]:overflow-x-auto [&_pre]:mb-4
-                [&_code]:bg-gray-100 [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sm [&_code]:font-mono
-                [&_img]:max-w-full [&_img]:rounded
-                [&_table]:border-collapse [&_table]:w-full [&_table]:mb-6 [&_table]:text-sm
-                [&_td]:border [&_td]:border-gray-200 [&_td]:px-4 [&_td]:py-2
-                [&_th]:border [&_th]:border-gray-200 [&_th]:px-4 [&_th]:py-2 [&_th]:font-semibold [&_th]:bg-gray-50 [&_th]:text-left
-              "
-              // mammoth generates sanitized HTML from trusted OOXML content
-              dangerouslySetInnerHTML={{ __html: docHtml }}
-            />
-          )}
+            {/* Images — draggable=false prevents the native image drag from triggering the upload dropzone */}
+            {!loading && blobUrl && mime.startsWith("image/") && (
+              <div
+                className="w-full h-full flex items-center justify-center rounded"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(45deg,#d1d5db 25%,transparent 25%)," +
+                    "linear-gradient(-45deg,#d1d5db 25%,transparent 25%)," +
+                    "linear-gradient(45deg,transparent 75%,#d1d5db 75%)," +
+                    "linear-gradient(-45deg,transparent 75%,#d1d5db 75%)",
+                  backgroundSize: "16px 16px",
+                  backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+                  backgroundColor: "#f9fafb",
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={blobUrl}
+                  alt={file.name}
+                  draggable={false}
+                  className="max-w-full max-h-full object-contain drop-shadow-sm select-none"
+                />
+              </div>
+            )}
 
-          {/* Word document error / unsupported format */}
-          {!loading && docError && (
-            <div className="text-center max-w-sm space-y-2">
-              <p className="text-sm text-muted-foreground">{docError}</p>
-              <Button variant="outline" size="sm" onClick={handleDownload}>
-                <Download className="h-4 w-4 mr-1.5" />
-                Download
-              </Button>
-            </div>
-          )}
+            {/* Videos */}
+            {!loading && blobUrl && mime.startsWith("video/") && (
+              <video src={blobUrl} controls className="max-w-full max-h-full rounded" />
+            )}
 
-          {/* Syntax-highlighted code / JSON / XML / etc. */}
-          {!loading && highlightedHtml && (
-            <div
-              className="w-full h-full overflow-auto rounded text-xs [&>pre]:p-4 [&>pre]:rounded [&>pre]:min-h-full [&>pre]:overflow-visible"
-              // shiki generates safe, sanitized HTML — no user content is rendered as markup
-              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-            />
-          )}
+            {/* Audio */}
+            {!loading && blobUrl && mime.startsWith("audio/") && (
+              <div className="w-full max-w-lg space-y-3">
+                <p className="text-sm font-medium text-center">{file.name}</p>
+                <audio src={blobUrl} controls className="w-full" />
+              </div>
+            )}
 
-          {/* Plain text fallback */}
-          {!loading && textContent !== null && (
-            <pre className="w-full h-full overflow-auto text-xs font-mono bg-muted rounded p-4 whitespace-pre-wrap">
-              {textContent}
-            </pre>
-          )}
+            {/* PDF */}
+            {!loading && blobUrl && mime === "application/pdf" && (
+              <iframe src={blobUrl} className="w-full h-full min-h-[60vh] rounded border" title={file.name} />
+            )}
+
+            {/* CSV → table */}
+            {!loading && csvData && (
+              <div className="w-full h-full flex flex-col rounded border border-border overflow-hidden">
+                <SheetTable sheetData={csvData.rows} truncated={csvData.truncated} />
+              </div>
+            )}
+
+            {/* Spreadsheet (xlsx / xls / ods) → tabbed table */}
+            {!loading && spreadsheetData && (
+              <SpreadsheetViewer data={spreadsheetData} />
+            )}
+
+            {/* Word document → Google-Docs-style white paper */}
+            {!loading && docHtml !== null && (
+              <div
+                className="
+                  w-full max-w-[860px] self-start
+                  bg-white dark:bg-neutral-900
+                  shadow-xl rounded-sm
+                  px-16 py-14 text-[15px] leading-relaxed text-gray-900 dark:text-gray-100
+                  [&_h1]:text-3xl  [&_h1]:font-bold    [&_h1]:mt-8  [&_h1]:mb-4
+                  [&_h2]:text-2xl  [&_h2]:font-bold    [&_h2]:mt-7  [&_h2]:mb-3
+                  [&_h3]:text-xl   [&_h3]:font-semibold [&_h3]:mt-6  [&_h3]:mb-2
+                  [&_h4]:text-lg   [&_h4]:font-semibold [&_h4]:mt-4  [&_h4]:mb-1
+                  [&_p]:mb-4 [&_p]:leading-[1.75]
+                  [&_ul]:list-disc   [&_ul]:ml-7 [&_ul]:mb-4
+                  [&_ol]:list-decimal [&_ol]:ml-7 [&_ol]:mb-4
+                  [&_li]:mb-1.5
+                  [&_strong]:font-semibold
+                  [&_em]:italic
+                  [&_u]:underline
+                  [&_a]:text-blue-600 [&_a]:underline [&_a]:underline-offset-2
+                  [&_blockquote]:border-l-4 [&_blockquote]:border-gray-300 [&_blockquote]:pl-5 [&_blockquote]:italic [&_blockquote]:text-gray-500 [&_blockquote]:my-4
+                  [&_hr]:my-6 [&_hr]:border-gray-200
+                  [&_pre]:bg-gray-50 [&_pre]:rounded [&_pre]:p-4 [&_pre]:text-sm [&_pre]:font-mono [&_pre]:overflow-x-auto [&_pre]:mb-4
+                  [&_code]:bg-gray-100 [&_code]:rounded [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sm [&_code]:font-mono
+                  [&_img]:max-w-full [&_img]:rounded
+                  [&_table]:border-collapse [&_table]:w-full [&_table]:mb-6 [&_table]:text-sm
+                  [&_td]:border [&_td]:border-gray-200 [&_td]:px-4 [&_td]:py-2
+                  [&_th]:border [&_th]:border-gray-200 [&_th]:px-4 [&_th]:py-2 [&_th]:font-semibold [&_th]:bg-gray-50 [&_th]:text-left
+                "
+                // mammoth generates sanitized HTML from trusted OOXML content
+                dangerouslySetInnerHTML={{ __html: docHtml }}
+              />
+            )}
+
+            {/* Word document error / unsupported format */}
+            {!loading && docError && (
+              <div className="text-center max-w-sm space-y-2">
+                <p className="text-sm text-muted-foreground">{docError}</p>
+                <Button variant="outline" size="sm" onClick={handleDownload}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Download
+                </Button>
+              </div>
+            )}
+
+            {/* Syntax-highlighted code / JSON / XML / etc. */}
+            {!loading && highlightedHtml && (
+              <div
+                className="w-full h-full overflow-auto rounded text-xs [&>pre]:p-4 [&>pre]:rounded [&>pre]:min-h-full [&>pre]:overflow-visible"
+                // shiki generates safe, sanitized HTML — no user content is rendered as markup
+                dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              />
+            )}
+
+            {/* Plain text fallback */}
+            {!loading && textContent !== null && (
+              <pre className="w-full h-full overflow-auto text-xs font-mono bg-muted rounded p-4 whitespace-pre-wrap">
+                {textContent}
+              </pre>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>

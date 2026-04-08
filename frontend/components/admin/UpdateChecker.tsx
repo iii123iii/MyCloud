@@ -8,48 +8,63 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RefreshCw, CheckCircle2, AlertCircle, ExternalLink, Loader2 } from "lucide-react";
 
-// ── localStorage key ────────────────────────────────────────────────────────
-
 const UPDATE_KEY = "mycloud_update_in_progress";
 
-// ── Stage detection from log lines ──────────────────────────────────────────
-
 const STAGES: { marker: string; label: string; progress: number }[] = [
-  { marker: "Pre-flight checks",   label: "Running pre-flight checks…",      progress: 8  },
-  { marker: "git pull",            label: "Pulling latest code…",             progress: 22 },
-  { marker: "git fetch",           label: "Fetching latest code…",            progress: 18 },
-  { marker: "Database migrations", label: "Running database migrations…",     progress: 42 },
-  { marker: "Building services",   label: "Building Docker images…",          progress: 52 },
-  { marker: "Restarting services", label: "Restarting services…",             progress: 86 },
-  { marker: "Update complete",     label: "Wrapping up…",                     progress: 98 },
+  { marker: "Pre-flight checks", label: "Running pre-flight checks...", progress: 8 },
+  { marker: "git pull", label: "Pulling latest code...", progress: 22 },
+  { marker: "git fetch", label: "Fetching latest code...", progress: 18 },
+  { marker: "Database migrations", label: "Running database migrations...", progress: 42 },
+  { marker: "Building services", label: "Building Docker images...", progress: 52 },
+  { marker: "Restarting services", label: "Restarting services...", progress: 86 },
+  { marker: "Update complete", label: "Wrapping up...", progress: 98 },
 ];
 
 function getUpdateStage(lines: string[]): { label: string; progress: number } {
-  let best = { label: "Starting update…", progress: 3 };
+  let best = { label: "Starting update...", progress: 3 };
   for (const line of lines) {
-    for (const s of STAGES) {
-      if (line.includes(s.marker) && s.progress >= best.progress) {
-        best = { label: s.label, progress: s.progress };
+    for (const stage of STAGES) {
+      if (line.includes(stage.marker) && stage.progress >= best.progress) {
+        best = { label: stage.label, progress: stage.progress };
       }
     }
   }
   return best;
 }
 
-// ── Component ───────────────────────────────────────────────────────────────
+function mergeUpdateInfo(
+  current: UpdateInfo | null,
+  patch: Partial<UpdateInfo>,
+): UpdateInfo {
+  return {
+    current: current?.current ?? "",
+    latest: current?.latest ?? "",
+    update_available: current?.update_available ?? false,
+    release_url: current?.release_url ?? "",
+    release_name: current?.release_name ?? "",
+    published_at: current?.published_at ?? "",
+    release_notes: current?.release_notes ?? "",
+    apply_supported: current?.apply_supported ?? false,
+    apply_message: current?.apply_message ?? "",
+    update_in_progress: current?.update_in_progress ?? false,
+    update_status: current?.update_status ?? "idle",
+    update_status_message: current?.update_status_message ?? "Idle",
+    update_log_path: current?.update_log_path ?? "",
+    last_started_target: current?.last_started_target ?? "",
+    ...patch,
+  };
+}
 
 export function UpdateChecker() {
-  const [info, setInfo]                     = useState<UpdateInfo | null>(null);
-  const [checking, setChecking]             = useState(false);
-  const [applying, setApplying]             = useState(false);
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [awaitingRestart, setAwaitingRestart] = useState(false);
-  const [applyMsg, setApplyMsg]             = useState<{ ok: boolean; text: string } | null>(null);
-  const [error, setError]                   = useState<string | null>(null);
-  const [sawOffline, setSawOffline]         = useState(false);
-  const [logLines, setLogLines]             = useState<string[]>([]);
+  const [applyMsg, setApplyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [sawOffline, setSawOffline] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
-
-  // ── Auto-scroll log to bottom ──────────────────────────────────────────────
 
   useEffect(() => {
     if (logRef.current) {
@@ -57,40 +72,35 @@ export function UpdateChecker() {
     }
   }, [logLines]);
 
-  // ── On mount: auto-detect an update that was running before the page refreshed ──
-
   useEffect(() => {
     if (!localStorage.getItem(UPDATE_KEY)) return;
 
     setAwaitingRestart(true);
 
-    // Immediately try to fetch the current status & log.
     adminApi.fetchUpdateStatus()
       .then((data) => {
-        // If the update already finished while we were away, clean up quietly.
+        setInfo((current) => mergeUpdateInfo(current, data));
         if (!data.update_in_progress && data.update_status !== "running") {
           setAwaitingRestart(false);
           localStorage.removeItem(UPDATE_KEY);
-          setInfo((prev) => (prev ? { ...prev, ...data } : null));
           if (data.update_status === "failed") {
             setApplyMsg({ ok: false, text: data.update_status_message });
           } else if (data.update_status === "succeeded") {
             setApplyMsg({ ok: true, text: data.update_status_message });
-            setInfo((prev) => prev ? { ...prev, update_available: false } : prev);
+            setInfo((current) => mergeUpdateInfo(current, { update_available: false }));
           }
         }
       })
       .catch(() => {
-        // Server is down — already restarting.
         setSawOffline(true);
       });
 
     adminApi.fetchUpdateLog()
-      .then((data) => { if (data?.lines?.length) setLogLines(data.lines); })
+      .then((data) => {
+        if (data?.lines?.length) setLogLines(data.lines);
+      })
       .catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Poll status + log while an update is running ───────────────────────────
+  }, []);
 
   useEffect(() => {
     if (!awaitingRestart) {
@@ -98,9 +108,10 @@ export function UpdateChecker() {
       return;
     }
 
-    // Fetch log immediately so users don't wait for the first tick.
     adminApi.fetchUpdateLog()
-      .then((data) => { if (data?.lines?.length) setLogLines(data.lines); })
+      .then((data) => {
+        if (data?.lines?.length) setLogLines(data.lines);
+      })
       .catch(() => {});
 
     const statusTimer = window.setInterval(async () => {
@@ -111,7 +122,7 @@ export function UpdateChecker() {
           window.location.reload();
           return;
         }
-        setInfo((current) => (current ? { ...current, ...data } : current));
+        setInfo((current) => mergeUpdateInfo(current, data));
         if (!data.update_in_progress) {
           setAwaitingRestart(false);
           localStorage.removeItem(UPDATE_KEY);
@@ -119,23 +130,22 @@ export function UpdateChecker() {
             setApplyMsg({ ok: false, text: data.update_status_message });
           } else if (data.update_status === "succeeded") {
             setApplyMsg({ ok: true, text: data.update_status_message });
-            // The update was applied — clear the "update available" banner immediately.
-            setInfo((current) => current ? { ...current, update_available: false } : current);
+            setInfo((current) => mergeUpdateInfo(current, { update_available: false }));
           }
         }
       } catch {
         setSawOffline(true);
       }
-    }, 1500); // ↑ was 4000 ms
+    }, 1500);
 
     const logTimer = window.setInterval(async () => {
       try {
         const data = await adminApi.fetchUpdateLog();
         if (data?.lines?.length) setLogLines(data.lines);
       } catch {
-        // ignore — status poll handles offline detection
+        // Status polling handles offline detection.
       }
-    }, 1000); // ↑ was 2000 ms
+    }, 1000);
 
     return () => {
       window.clearInterval(statusTimer);
@@ -143,20 +153,16 @@ export function UpdateChecker() {
     };
   }, [awaitingRestart, sawOffline]);
 
-  // ── Stage / progress derived from log lines ────────────────────────────────
-
   const { stageLabel, stageProgress } = useMemo(() => {
     if (sawOffline) {
-      return { stageLabel: "Server restarting, waiting for it to come back…", stageProgress: 92 };
+      return { stageLabel: "Server restarting, waiting for it to come back...", stageProgress: 92 };
     }
     if (!logLines.length) {
-      return { stageLabel: info?.update_status_message || "Update in progress…", stageProgress: 3 };
+      return { stageLabel: info?.update_status_message || "Update in progress...", stageProgress: 3 };
     }
-    const s = getUpdateStage(logLines);
-    return { stageLabel: s.label, stageProgress: s.progress };
+    const stage = getUpdateStage(logLines);
+    return { stageLabel: stage.label, stageProgress: stage.progress };
   }, [sawOffline, logLines, info?.update_status_message]);
-
-  // ── Actions ────────────────────────────────────────────────────────────────
 
   async function handleCheck() {
     setChecking(true);
@@ -181,12 +187,12 @@ export function UpdateChecker() {
     setApplyMsg(null);
     setLogLines([]);
     try {
-      const res = await adminApi.applyUpdate(info?.latest);
-      setInfo((current) =>
-        current
-          ? { ...current, update_in_progress: true, update_status: "running", update_status_message: res.message }
-          : current,
-      );
+      const res = await adminApi.applyUpdate(info.latest);
+      setInfo((current) => mergeUpdateInfo(current, {
+        update_in_progress: true,
+        update_status: "running",
+        update_status_message: res.message,
+      }));
       setApplyMsg({ ok: true, text: res.message });
       localStorage.setItem(UPDATE_KEY, "1");
       setAwaitingRestart(true);
@@ -209,9 +215,7 @@ export function UpdateChecker() {
   }
 
   const updateActionDisabled = applying || awaitingRestart || Boolean(info?.update_in_progress);
-  const updateRunning        = awaitingRestart || info?.update_in_progress || info?.update_status === "running";
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const updateRunning = awaitingRestart || info?.update_in_progress || info?.update_status === "running";
 
   return (
     <Card>
@@ -314,16 +318,13 @@ export function UpdateChecker() {
           </div>
         )}
 
-        {/* ── Live progress while update is running ── */}
         {updateRunning && (
           <div className="space-y-3">
-            {/* Stage label + spinner */}
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
               <span>{stageLabel}</span>
             </div>
 
-            {/* Progress bar */}
             <div className="space-y-1">
               <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
                 <div
@@ -336,7 +337,6 @@ export function UpdateChecker() {
               </p>
             </div>
 
-            {/* Live log terminal */}
             {logLines.length > 0 && (
               <div
                 ref={logRef}
@@ -351,7 +351,6 @@ export function UpdateChecker() {
           </div>
         )}
 
-        {/* ── Final status: failed ── */}
         {!updateRunning && info?.update_status === "failed" && (
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
             <div className="flex items-center gap-2 font-medium mb-1">
@@ -372,7 +371,6 @@ export function UpdateChecker() {
           </div>
         )}
 
-        {/* ── Final status: succeeded ── */}
         {!updateRunning && info?.update_status === "succeeded" && (
           <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
             <div className="flex items-center gap-2 font-medium">

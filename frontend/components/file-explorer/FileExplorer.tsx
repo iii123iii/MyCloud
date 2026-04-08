@@ -153,6 +153,9 @@ export function FileExplorer() {
 
   const { getRootProps, getInputProps, isDragActive, open: openFileDialog } = useDropzone({
     onDrop, noClick: true, noKeyboard: true,
+    // Disable while the preview modal is open so dragging an image inside it
+    // doesn't accidentally trigger an upload.
+    disabled: !!previewFile,
   });
 
   // ── Folder navigation ─────────────────────────────────────────────────
@@ -297,8 +300,10 @@ export function FileExplorer() {
       {previewFile && (
         <PreviewModal
           file={previewFile}
+          files={filtered}
           open={!!previewFile}
           onOpenChange={(o) => !o && setPreviewFile(null)}
+          onNavigate={setPreviewFile}
         />
       )}
     </div>

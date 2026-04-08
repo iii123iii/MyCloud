@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"strings"
@@ -136,7 +137,20 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 			httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Invalid token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), claims.UserID, claims.Role)))
+		role, active, err := getUserSession(r.Context(), a.DB, claims.UserID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "User not found")
+				return
+			}
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if !active {
+			httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Account is disabled")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), claims.UserID, role)))
 	})
 }
 

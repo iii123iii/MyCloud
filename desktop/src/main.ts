@@ -288,9 +288,9 @@ async function bootstrap(): Promise<void> {
   ipcHandle("auth:login", async (_event, ...args) => {
     const payload = args[0] as LoginPayload;
     const user = await api.login(payload);
+    syncEngine.start();
     store.pushEvent({ level: "success", message: `Signed in as ${user.username}` });
     emitState();
-    await syncEngine.scheduleFullSync();
     // Fetch storage stats right after login
     void api.getStorageStats().then((s) => {
       if (s) { store.update((st) => { st.storageStats = s; }); emitState(); }

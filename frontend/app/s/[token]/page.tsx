@@ -31,6 +31,7 @@ export default function PublicSharePage({ params }: PageProps) {
 
   const resolve = async (pwd?: string) => {
     setLoading(true);
+    setNotFound(false);
     try {
       const info = await sharesApi.resolve(token, pwd);
       setShareInfo(info);
@@ -50,26 +51,22 @@ export default function PublicSharePage({ params }: PageProps) {
   // Auto-resolve on first mount (no password needed)
   useEffect(() => { resolve(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     const url = sharesApi.downloadUrl(token);
-    const a = document.createElement("a");
-    a.href = url;
-    if (password) {
+    try {
       // Can't easily set custom header on anchor—use fetch + blob
-      fetch(url, { headers: { "X-Share-Password": password } })
-        .then((r) => r.blob())
-        .then((blob) => {
-          const blobUrl = URL.createObjectURL(blob);
-          a.href = blobUrl;
-          a.download = shareInfo?.file_name ?? "download";
-          a.click();
-          URL.revokeObjectURL(blobUrl);
-        })
-        .catch(() => toast.error("Download failed"));
-      return;
+      const res = await fetch(url, password ? { headers: { "X-Share-Password": password } } : undefined);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = shareInfo?.file_name ?? "download";
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      toast.error("Download failed");
     }
-    a.download = shareInfo?.file_name ?? "download";
-    a.click();
   };
 
   return (

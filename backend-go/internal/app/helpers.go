@@ -75,6 +75,18 @@ func getSetting(ctx context.Context, db *sql.DB, key, def string) (string, error
 	return value.String, nil
 }
 
+func getUserSession(ctx context.Context, db *sql.DB, userID string) (string, bool, error) {
+	var (
+		role     string
+		isActive bool
+	)
+	err := db.QueryRowContext(ctx, "SELECT role, is_active FROM users WHERE id=?", userID).Scan(&role, &isActive)
+	if err != nil {
+		return "", false, err
+	}
+	return role, isActive, nil
+}
+
 func boolSetting(raw string) bool {
 	return strings.EqualFold(raw, "true") || raw == "1"
 }
@@ -92,6 +104,13 @@ func nullableString(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+func nullableStringPtr(s *string) interface{} {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return *s
 }
 
 func nullableJSON(raw []byte) interface{} {

@@ -45,11 +45,6 @@ version_is_greater() {
   [ "$highest" = "$left" ]
 }
 
-extract_checkout_version() {
-  sed -n 's/.*MYCLOUD_VERSION:[[:space:]]*[$][{]MYCLOUD_VERSION:-\([^}]*\)[}].*/\1/p' \
-    docker-compose.yml | head -n 1
-}
-
 if [ -n "$TARGET_VERSION" ] && [ -n "$CURRENT_VERSION" ]; then
   if ! version_is_greater "$TARGET_VERSION" "$CURRENT_VERSION"; then
     echo "Target version $TARGET_VERSION is not newer than current version $CURRENT_VERSION."
@@ -65,9 +60,15 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 1
 fi
 
+git fetch --tags --force
 git pull --ff-only
 
-CHECKED_OUT_VERSION="$(extract_checkout_version || true)"
+CHECKED_OUT_VERSION="$(sh "$PROJECT_DIR/scripts/resolve-version.sh" || true)"
+if [ -n "$CHECKED_OUT_VERSION" ]; then
+  export MYCLOUD_VERSION="$CHECKED_OUT_VERSION"
+  echo "Resolved MYCLOUD_VERSION=$MYCLOUD_VERSION"
+fi
+
 if [ -n "$TARGET_VERSION" ] && [ -n "$CURRENT_VERSION" ] && [ -n "$CHECKED_OUT_VERSION" ]; then
   if [ "$CHECKED_OUT_VERSION" != "$TARGET_VERSION" ] && \
      ! version_is_greater "$CHECKED_OUT_VERSION" "$CURRENT_VERSION"; then

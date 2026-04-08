@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -117,30 +118,80 @@ func (a *App) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleUpdateFolder(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	id := chi.URLParam(r, "id")
-	var payload struct {
-		Name     *string `json:"name"`
-		ParentID *string `json:"parent_id"`
-	}
+	var payload map[string]json.RawMessage
 	if err := decodeJSON(r, &payload); err != nil {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
+	if len(payload) == 0 {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
+		return
+	}
 	switch {
-	case payload.Name != nil:
-		name := strings.TrimSpace(*payload.Name)
+	case payload["name"] != nil:
+		var name string
+		if err := json.Unmarshal(payload["name"], &name); err != nil {
+			httpapi.Error(w, http.StatusBadRequest, "validation_error", "name must be a string")
+			return
+		}
+		name = strings.TrimSpace(name)
 		if name == "" {
 			httpapi.Error(w, http.StatusBadRequest, "validation_error", "Folder name is required")
 			return
 		}
-		_, err := a.DB.ExecContext(r.Context(), "UPDATE folders SET name=? WHERE id=? AND user_id=? AND is_deleted=0", name, id, userID)
+		res, err := a.DB.ExecContext(r.Context(), "UPDATE folders SET name=? WHERE id=? AND user_id=? AND is_deleted=0", name, id, userID)
 		if err != nil {
 			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-	case payload.ParentID != nil:
-		_, err := a.DB.ExecContext(r.Context(), "UPDATE folders SET parent_id=? WHERE id=? AND user_id=? AND is_deleted=0", payload.ParentID, id, userID)
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
+			return
+		}
+	case payload["parent_id"] != nil:
+		var parentID *string
+		if string(payload["parent_id"]) != "null" {
+			var raw string
+			if err := json.Unmarshal(payload["parent_id"], &raw); err != nil {
+				httpapi.Error(w, http.StatusBadRequest, "validation_error", "parent_id must be a string or null")
+				return
+			}
+			raw = strings.TrimSpace(raw)
+			if raw == id {
+				httpapi.Error(w, http.StatusBadRequest, "validation_error", "Folder cannot be moved into itself")
+				return
+			}
+			if raw != "" {
+				var exists int
+				if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=0", raw, userID).Scan(&exists); err != nil {
+					httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+					return
+				}
+				if exists == 0 {
+					httpapi.Error(w, http.StatusBadRequest, "invalid_parent", "Parent folder not found")
+					return
+				}
+				descendantIDs, err := a.collectFolderTree(r.Context(), userID, id)
+				if err != nil {
+					httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+					return
+				}
+				for _, descendantID := range descendantIDs {
+					if descendantID == raw {
+						httpapi.Error(w, http.StatusBadRequest, "validation_error", "Folder cannot be moved into its descendant")
+						return
+					}
+				}
+				parentID = &raw
+			}
+		}
+		res, err := a.DB.ExecContext(r.Context(), "UPDATE folders SET parent_id=? WHERE id=? AND user_id=? AND is_deleted=0", nullableStringPtr(parentID), id, userID)
 		if err != nil {
 			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
 			return
 		}
 	default:

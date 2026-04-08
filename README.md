@@ -38,7 +38,7 @@ The repository also includes:
 ## Quick Start With Docker Compose
 
 ```bash
-docker compose up --build
+sh ./scripts/compose-up.sh up --build
 ```
 
 Services started by compose:
@@ -83,14 +83,15 @@ Each app has its own README:
 
 ## Versioning And Updates
 
-For Docker deployments, `MYCLOUD_VERSION` in `docker-compose.yml` is the release source of truth for the backend version embedded at build time.
+For Docker deployments, the backend version is resolved from the Git tag on the checked-out commit. The Compose wrappers and updater scripts export `MYCLOUD_VERSION` automatically before they build.
 
 ### How To Release A New Version
 
-1. Update `MYCLOUD_VERSION` in `docker-compose.yml` to the release tag you want to ship.
-2. Commit and push the code.
-3. Create the matching GitHub release.
-4. Deploy with `docker compose up -d --build backend frontend nginx`.
+1. Commit and push the code.
+2. Create and push the Git tag you want to ship, then create the matching GitHub release.
+3. Deploy with `sh ./scripts/compose-up.sh up -d --build backend frontend nginx`.
+
+On Windows PowerShell, use `./scripts/compose-up.ps1 up -d --build backend frontend nginx`.
 
 ### Admin Panel One-Click Updates
 

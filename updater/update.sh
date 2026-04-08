@@ -38,12 +38,15 @@ fi
 
 echo ""
 echo "── git pull ─────────────────────────────────────────────────"
-git fetch --tags
+git fetch --tags --force
 git pull --ff-only
 
+export MYCLOUD_VERSION="${MYCLOUD_VERSION:-$(sh "$PROJECT_DIR/scripts/resolve-version.sh")}"
+echo "Resolved MYCLOUD_VERSION=$MYCLOUD_VERSION"
+
 # ── Version source of truth ───────────────────────────────────────────────────
-# The backend version embedded in container builds comes from docker-compose.yml
-# via the backend build arg. Do not override MYCLOUD_VERSION here.
+# The backend image version now comes from the checked-out Git tag unless an
+# operator explicitly overrides MYCLOUD_VERSION.
 
 # ── Database migrations ──────────────────────────────────────────────────────
 

@@ -36,5 +36,5 @@ Required environment variables match the Docker stack:
 From repo root:
 
 ```bash
-docker compose up --build backend mariadb redis init
+sh ./scripts/compose-up.sh up --build backend mariadb redis init
 ```

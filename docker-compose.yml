@@ -22,8 +22,9 @@ services:
     build:
       context: ./backend-go
       args:
-        # Single source of truth for the backend version embedded at build time.
-        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-v1.2.4}
+        # Resolved from Git tags by the compose wrapper / updater scripts.
+        # You can still override it manually by exporting MYCLOUD_VERSION.
+        MYCLOUD_VERSION: ${MYCLOUD_VERSION:-dev}
     environment:
       DB_HOST: mariadb
       DB_PORT: 3306

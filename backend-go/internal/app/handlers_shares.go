@@ -78,8 +78,16 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "validation_error", "file_id or folder_id is required")
 		return
 	}
+	if payload.FileID != nil && payload.FolderID != nil {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", "share exactly one resource")
+		return
+	}
 	if payload.Permission == "" {
 		payload.Permission = "read"
+	}
+	if payload.Permission != "read" && payload.Permission != "write" {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", "invalid permission")
+		return
 	}
 	var passwordHash interface{}
 	if strings.TrimSpace(payload.Password) != "" {
@@ -89,6 +97,28 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		passwordHash = hash
+	}
+	switch {
+	case payload.FileID != nil:
+		var exists int
+		if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM files WHERE id=? AND user_id=? AND is_deleted=0", *payload.FileID, userID).Scan(&exists); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if exists == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
+			return
+		}
+	case payload.FolderID != nil:
+		var exists int
+		if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=0", *payload.FolderID, userID).Scan(&exists); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if exists == 0 {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
+			return
+		}
 	}
 	id := uuid.NewString()
 	token := randomToken()
@@ -116,8 +146,11 @@ func (a *App) loadShare(r *http.Request, token string) (map[string]any, *storage
 	row := a.DB.QueryRowContext(r.Context(), `
 		SELECT s.permission, s.password_hash, s.expires_at, s.file_id, f.name, f.size_bytes, f.mime_type, f.user_id, f.storage_path, f.encryption_key_enc, f.encryption_iv, f.encryption_tag, s.folder_id
 		FROM shares s
-		LEFT JOIN files f ON f.id = s.file_id
-		WHERE s.token=?`, token)
+		LEFT JOIN files f ON f.id = s.file_id AND f.is_deleted=0
+		LEFT JOIN folders d ON d.id = s.folder_id
+		WHERE s.token=?
+		  AND (s.expires_at IS NULL OR s.expires_at > NOW())
+		  AND (s.folder_id IS NULL OR d.is_deleted=0)`, token)
 	var permission string
 	var passwordHash, expiresAt, fileID, fileName, mimeType, ownerID, storagePath, encKey, iv, tag, folderID sql.NullString
 	var sizeBytes sql.NullInt64
@@ -139,6 +172,9 @@ func (a *App) loadShare(r *http.Request, token string) (map[string]any, *storage
 	}
 	if folderID.Valid {
 		data["folder_id"] = folderID.String
+	}
+	if fileID.Valid && !storagePath.Valid {
+		return nil, nil, "", sql.ErrNoRows
 	}
 	if !fileID.Valid {
 		return data, nil, "", nil

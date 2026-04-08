@@ -85,6 +85,10 @@ func (a *App) handleDeleteTrashItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.permanentlyDeleteFolder(r.Context(), userID, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "Trash item not found")
+			return
+		}
 		httpapi.Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}

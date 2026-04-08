@@ -202,7 +202,20 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Invalid refresh token")
 		return
 	}
-	tokens, err := a.Auth.IssuePair(claims.UserID, claims.Role)
+	role, active, err := getUserSession(r.Context(), a.DB, claims.UserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "User not found")
+		return
+	}
+	if err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	if !active {
+		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Account is disabled")
+		return
+	}
+	tokens, err := a.Auth.IssuePair(claims.UserID, role)
 	if err != nil {
 		httpapi.Error(w, http.StatusInternalServerError, "token_error", err.Error())
 		return
