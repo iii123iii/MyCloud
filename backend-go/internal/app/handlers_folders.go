@@ -115,6 +115,51 @@ func (a *App) handleGetFolder(w http.ResponseWriter, r *http.Request) {
 	httpapi.JSON(w, http.StatusOK, data, nil)
 }
 
+func (a *App) handleFolderPath(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFrom(r)
+	currentID := chi.URLParam(r, "id")
+	path := make([]map[string]any, 0, 8)
+
+	for currentID != "" {
+		var id, name, createdAt, updatedAt string
+		var parent sql.NullString
+		err := a.DB.QueryRowContext(r.Context(), `
+			SELECT id, name, parent_id, created_at, updated_at
+			FROM folders
+			WHERE id=? AND user_id=? AND is_deleted=0`,
+			currentID, userID,
+		).Scan(&id, &name, &parent, &createdAt, &updatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
+			return
+		}
+		if err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+
+		item := map[string]any{
+			"id":         id,
+			"name":       name,
+			"created_at": createdAt,
+			"updated_at": updatedAt,
+		}
+		if parent.Valid {
+			item["parent_id"] = parent.String
+			currentID = parent.String
+		} else {
+			currentID = ""
+		}
+		path = append(path, item)
+	}
+
+	for left, right := 0, len(path)-1; left < right; left, right = left+1, right-1 {
+		path[left], path[right] = path[right], path[left]
+	}
+
+	httpapi.JSON(w, http.StatusOK, map[string]any{"folders": path}, nil)
+}
+
 func (a *App) handleUpdateFolder(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	id := chi.URLParam(r, "id")

@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { AlertCircle, ChevronLeft, ChevronRight, Download, Loader2, X } from "lucide-react";
-import { codeToHtml } from "shiki";
 import { files as filesApi, tokenStore } from "@/lib/api";
 import {
   isPreviewable,
@@ -69,6 +68,30 @@ function isTextBased(mime: string): boolean {
 // ─── CSV helpers ────────────────────────────────────────────────────────────
 
 const MAX_TABLE_ROWS = 1000;
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_DOCUMENT_PREVIEW_BYTES = 10 * 1024 * 1024;
+const MAX_BINARY_PREVIEW_BYTES = 25 * 1024 * 1024;
+
+function getPreviewSizeLimitMessage(file: FileItem): string | null {
+  const { mime_type: mime, size_bytes: size } = file;
+
+  if (!isPreviewable(mime)) {
+    return "Preview not available for this file type.";
+  }
+  if (isTextBased(mime) && size > MAX_TEXT_PREVIEW_BYTES) {
+    return `This text file is too large to preview in the browser (${formatBytes(size)}). Download it instead.`;
+  }
+  if ((PREVIEWABLE_SPREADSHEET_TYPES.has(mime) || PREVIEWABLE_WORD_TYPES.has(mime)) && size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return `This document is too large to render in the browser (${formatBytes(size)}). Download it instead.`;
+  }
+  if (
+    (mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/") || mime === "application/pdf") &&
+    size > MAX_BINARY_PREVIEW_BYTES
+  ) {
+    return `This file is too large for inline preview (${formatBytes(size)}). Download it instead.`;
+  }
+  return null;
+}
 
 /** Parse CSV text into a 2D array, handling double-quoted fields. */
 function parseCsv(text: string): string[][] {
@@ -182,6 +205,7 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
   const [docHtml, setDocHtml]                     = useState<string | null>(null);
   const [docError, setDocError]                   = useState<string | null>(null);
   const [fetchError, setFetchError]               = useState<string | null>(null);
+  const [previewNotice, setPreviewNotice]         = useState<string | null>(null);
   const [loading, setLoading]                     = useState(true);
   const blobUrlRef = useRef<string | null>(null);
 
@@ -217,12 +241,23 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
     setDocHtml(null);
     setDocError(null);
     setFetchError(null);
+    setPreviewNotice(null);
+
+    const mime = file.mime_type;
+    const previewNotice = getPreviewSizeLimitMessage(file);
+
+    if (previewNotice) {
+      setPreviewNotice(previewNotice);
+      setLoading(false);
+      return;
+    }
 
     const token = tokenStore.getAccess();
-    const mime = file.mime_type;
+    const controller = new AbortController();
 
     fetch(filesApi.previewUrl(file.id), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: controller.signal,
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -280,6 +315,7 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
           const lang = MIME_TO_LANG[mime];
           if (lang) {
             try {
+              const { codeToHtml } = await import("shiki");
               const html = await codeToHtml(text, { lang, theme: "github-light" });
               setHighlightedHtml(html);
             } catch {
@@ -298,12 +334,16 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
         setBlobUrl(url);
       })
       .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
         console.error(err);
         setFetchError("Failed to load preview. The file may be unavailable or too large to display.");
       })
       .finally(() => setLoading(false));
 
     return () => {
+      controller.abort();
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -415,7 +455,17 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
               </div>
             )}
 
-            {!loading && !fetchError && !isPreviewable(mime) && (
+            {!loading && !fetchError && previewNotice && (
+              <div className="flex flex-col items-center gap-2 text-center max-w-sm">
+                <p className="text-muted-foreground text-sm">{previewNotice}</p>
+                <Button variant="outline" size="sm" onClick={handleDownload}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Download
+                </Button>
+              </div>
+            )}
+
+            {!loading && !fetchError && !previewNotice && !isPreviewable(mime) && (
               <div className="flex flex-col items-center gap-2 text-center">
                 <p className="text-muted-foreground text-sm">Preview not available for this file type.</p>
                 <Button variant="outline" size="sm" onClick={handleDownload}>

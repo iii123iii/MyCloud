@@ -219,6 +219,7 @@ export const files = {
 
 export const folders = {
   list: (parent_id?: string) => request<{ folders: FolderItem[] }>(`/api/v2/folders${parent_id ? `?parent_id=${parent_id}` : ""}`),
+  path: (id: string) => request<{ folders: FolderItem[] }>(`/api/v2/folders/${id}/path`),
   get: (id: string) => request<FolderItem>(`/api/v2/folders/${id}`),
   create: (data: { name: string; parent_id?: string | null }) =>
     request<FolderItem>("/api/v2/folders", { method: "POST", body: JSON.stringify(data) }),

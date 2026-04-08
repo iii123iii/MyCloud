@@ -16,12 +16,7 @@ if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/d
   exit 0
 fi
 
-if version="$(git describe --tags --exact-match 2>/dev/null)"; then
-  printf '%s\n' "$version"
-  exit 0
-fi
-
-if version="$(git describe --tags --abbrev=0 2>/dev/null)"; then
+if version="$(git describe --tags --dirty --always 2>/dev/null)"; then
   printf '%s\n' "$version"
   exit 0
 fi

@@ -9,10 +9,7 @@ if ([string]::IsNullOrWhiteSpace($env:MYCLOUD_VERSION)) {
   try {
     $null = cmd /c "git rev-parse --is-inside-work-tree 2>nul"
     if ($LASTEXITCODE -eq 0) {
-      $resolvedVersion = cmd /c "git describe --tags --exact-match 2>nul"
-      if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resolvedVersion)) {
-        $resolvedVersion = cmd /c "git describe --tags --abbrev=0 2>nul"
-      }
+      $resolvedVersion = cmd /c "git describe --tags --dirty --always 2>nul"
       if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($resolvedVersion)) {
         $shortSha = cmd /c "git rev-parse --short HEAD 2>nul"
         if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($shortSha)) {

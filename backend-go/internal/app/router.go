@@ -18,6 +18,7 @@ func (a *App) routes() chi.Router {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(a.requestLogger)
+	r.Use(middleware.Compress(5, "application/json"))
 	r.Use(a.cors)
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +55,7 @@ func (a *App) routes() chi.Router {
 
 			authed.Get("/folders", a.handleListFolders)
 			authed.Post("/folders", a.handleCreateFolder)
+			authed.Get("/folders/{id}/path", a.handleFolderPath)
 			authed.Get("/folders/{id}", a.handleGetFolder)
 			authed.Patch("/folders/{id}", a.handleUpdateFolder)
 			authed.Delete("/folders/{id}", a.handleDeleteFolder)

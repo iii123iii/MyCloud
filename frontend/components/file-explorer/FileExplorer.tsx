@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useDeferredValue, useEffect, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
@@ -39,14 +39,12 @@ export function FileExplorer() {
     const urlFolderId = searchParams.get("folder");
     if (!urlFolderId) return;
     (async () => {
-      const path: FolderItem[] = [];
-      let currentId: string | undefined = urlFolderId;
-      while (currentId) {
-        try {
-          const f = await foldersApi.get(currentId);
-          path.unshift(f);
-          currentId = f.parent_id;
-        } catch { break; }
+      let path: FolderItem[] = [];
+      try {
+        const data = await foldersApi.path(urlFolderId);
+        path = data.folders ?? [];
+      } catch {
+        return;
       }
       if (path.length > 0) {
         setFolderPath(path);
@@ -91,7 +89,12 @@ export function FileExplorer() {
   const { data: foldersData, mutate: mutateFolders } = useSWR(
     `folders-${folderId ?? "root"}`,
     () => foldersApi.list(folderId),
-    { refreshInterval: 10_000 } // poll every 10 s so desktop-synced folders appear automatically
+    {
+      refreshInterval: 30_000,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      revalidateOnFocus: true,
+    }
   );
 
   const allFiles = filePages
@@ -182,13 +185,16 @@ export function FileExplorer() {
   };
 
   // ── Filtered lists ────────────────────────────────────────────────────
-  const lowerQ = searchQ.toLowerCase();
-  const filtered = searchQ
-    ? allFiles.filter((f) => f.name.toLowerCase().includes(lowerQ))
-    : allFiles;
-  const filteredFolders = searchQ
-    ? folderList.filter((f) => f.name.toLowerCase().includes(lowerQ))
-    : folderList;
+  const deferredSearchQ = useDeferredValue(searchQ);
+  const lowerQ = deferredSearchQ.trim().toLowerCase();
+  const filtered = useMemo(
+    () => (lowerQ ? allFiles.filter((f) => f.name.toLowerCase().includes(lowerQ)) : allFiles),
+    [allFiles, lowerQ]
+  );
+  const filteredFolders = useMemo(
+    () => (lowerQ ? folderList.filter((f) => f.name.toLowerCase().includes(lowerQ)) : folderList),
+    [folderList, lowerQ]
+  );
 
   return (
     <div {...getRootProps()} className="relative min-h-[400px]">

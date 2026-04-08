@@ -14,9 +14,7 @@ RUN set -eu; \
     version="${MYCLOUD_VERSION:-}"; \
     if [ -z "$version" ]; then \
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
-        if version="$(git describe --tags --exact-match 2>/dev/null)"; then \
-          :; \
-        elif version="$(git describe --tags --abbrev=0 2>/dev/null)"; then \
+        if version="$(git describe --tags --dirty --always 2>/dev/null)"; then \
           :; \
         else \
           sha="$(git rev-parse --short HEAD 2>/dev/null || true)"; \
