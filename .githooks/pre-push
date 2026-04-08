@@ -1,0 +1,52 @@
+#!/usr/bin/env sh
+# .githooks/pre-push — reminds you to bump MYCLOUD_VERSION when you push
+# backend or frontend code without touching docker-compose.yml.
+#
+# This hook is NON-BLOCKING: it only prints a warning and always exits 0.
+#
+# To activate for everyone who clones this repo:
+#   git config core.hooksPath .githooks
+#
+# To activate automatically for new clones, add the above line to a
+# setup/bootstrap script (e.g. scripts/setup-dev.sh).
+
+COMPOSE_FILE="docker-compose.yml"
+
+CURRENT=$(sed -n 's/.*MYCLOUD_VERSION:[[:space:]]*[$][{]MYCLOUD_VERSION:-\([^}]*\)[}].*/\1/p' \
+  "$COMPOSE_FILE" 2>/dev/null | head -n 1)
+[ -n "$CURRENT" ] || exit 0   # Can't read version — skip silently.
+
+# Read the push range(s) from stdin.
+while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  # Skip branch deletions.
+  [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ] && continue
+
+  # For a brand-new remote branch, check all commits up to LOCAL_SHA.
+  if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    RANGE="$LOCAL_SHA"
+  else
+    RANGE="$REMOTE_SHA..$LOCAL_SHA"
+  fi
+
+  # Did any of the commits being pushed touch docker-compose.yml?
+  COMPOSE_TOUCHED=$(git log --name-only --format="" "$RANGE" -- "$COMPOSE_FILE" 2>/dev/null | head -1)
+  [ -n "$COMPOSE_TOUCHED" ] && continue   # Version was (likely) bumped — all good.
+
+  # Did any of the commits touch backend or frontend source code?
+  CODE_TOUCHED=$(git log --name-only --format="" "$RANGE" \
+    -- backend-go/ frontend/ 2>/dev/null | head -1)
+  [ -z "$CODE_TOUCHED" ] && continue   # No application code changed — skip.
+
+  echo ""
+  echo "------------------------------------------------------------------------"
+  echo "REMINDER: you pushed backend/frontend changes but MYCLOUD_VERSION"
+  echo "          in docker-compose.yml is still $CURRENT."
+  echo ""
+  echo "  If this is a release, run:"
+  echo "    ./scripts/bump-version.sh patch   # or: minor | major"
+  echo "    git push && git push --tags"
+  echo "------------------------------------------------------------------------"
+  echo ""
+done
+
+exit 0
