@@ -3,9 +3,9 @@
 -- on-disk blob via blob_refs.
 
 ALTER TABLE files
-    ADD COLUMN content_sha256 CHAR(64) NULL;
+    ADD COLUMN IF NOT EXISTS content_sha256 CHAR(64) NULL;
 
-CREATE INDEX idx_files_user_hash ON files (user_id, content_sha256);
+CREATE INDEX IF NOT EXISTS idx_files_user_hash ON files (user_id, content_sha256);
 
 CREATE TABLE IF NOT EXISTS blob_refs (
     storage_path VARCHAR(512) NOT NULL,

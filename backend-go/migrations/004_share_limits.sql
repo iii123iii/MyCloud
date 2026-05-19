@@ -3,5 +3,5 @@
 -- download_count=0.
 
 ALTER TABLE shares
-    ADD COLUMN download_limit INT          NULL DEFAULT NULL,
-    ADD COLUMN download_count INT NOT NULL DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS download_limit INT          NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS download_count INT NOT NULL DEFAULT 0;
