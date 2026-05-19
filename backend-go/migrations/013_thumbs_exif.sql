@@ -1,12 +1,12 @@
 -- Image thumbnails + EXIF metadata.
 
 ALTER TABLE files
-    ADD COLUMN thumb_path VARCHAR(512) NULL,
-    ADD COLUMN taken_at   DATETIME     NULL,
-    ADD COLUMN width      INT          NULL,
-    ADD COLUMN height     INT          NULL;
+    ADD COLUMN IF NOT EXISTS thumb_path VARCHAR(512) NULL,
+    ADD COLUMN IF NOT EXISTS taken_at   DATETIME     NULL,
+    ADD COLUMN IF NOT EXISTS width      INT          NULL,
+    ADD COLUMN IF NOT EXISTS height     INT          NULL;
 
-CREATE INDEX idx_files_taken_at ON files (user_id, taken_at);
+CREATE INDEX IF NOT EXISTS idx_files_taken_at ON files (user_id, taken_at);
 
 CREATE TABLE IF NOT EXISTS file_exif (
     file_id   CHAR(36) NOT NULL,
