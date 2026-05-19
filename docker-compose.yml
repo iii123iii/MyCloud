@@ -118,6 +118,20 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+  # OnlyOffice Document Server for collaborative Office editing. Disabled by
+  # default — only brought up via `--profile office`. Requires OFFICE_JWT_SECRET
+  # and OFFICE_URL on the backend.
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: "${OFFICE_JWT_SECRET:-}"
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+    profiles: ["office"]
+    restart: unless-stopped
+
 volumes:
   file_storage:
   db_data:
@@ -125,3 +139,5 @@ volumes:
   ssl_certs:
   secrets: # persisted across restarts — secrets never regenerate
   logs: # persisted update logs — survives container restarts and reboots
+  onlyoffice_data:
+  onlyoffice_logs:

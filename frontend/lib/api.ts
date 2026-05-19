@@ -1,6 +1,8 @@
+import * as tus from "tus-js-client";
 import type {
   AuthTokens, User, FileItem, FolderItem, PaginatedFiles,
-  Share, TrashItem, SearchResult, AdminStats, ActivityLog, UpdateInfo,
+  Share, ShareGrant, GrantPermission,
+  TrashItem, SearchResult, AdminStats, ActivityLog, UpdateInfo,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -82,6 +84,13 @@ async function requestEnvelope<T>(
   }
 
   if (!res.ok) {
+    if (res.status === 429) {
+      const retry = res.headers.get("Retry-After");
+      const body = await parseEnvelope<never>(res);
+      const base = body?.error?.message ?? "Too many requests";
+      const suffix = retry ? ` (retry in ${retry}s)` : "";
+      throw new ApiError(429, base + suffix, body?.error?.code ?? "rate_limited");
+    }
     const body = await parseEnvelope<never>(res);
     throw new ApiError(res.status, body?.error?.message ?? res.statusText, body?.error?.code);
   }
@@ -130,6 +139,10 @@ export const auth = {
   },
 
   me: () => request<User>("/api/v2/auth/me"),
+  myActivity: (limit = 100, before?: string) =>
+    request<{ logs: ActivityLog[] }>(
+      `/api/v2/auth/me/activity?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
+    ),
 
   changePassword: (data: { old_password: string; new_password: string }) =>
     request<{ message: string }>("/api/v2/auth/change-password", {
@@ -165,47 +178,52 @@ export const files = {
     };
   },
 
+  /**
+   * Resumable upload via tus 1.0. Replaces the legacy single-shot POST.
+   *
+   * Backwards-compatible: callers pass a FormData object so existing code
+   * doesn't break. We extract the file + folder_id from it and start a tus
+   * upload at /api/v2/files/tus/.
+   */
   upload: (formData: FormData, onProgress?: (pct: number) => void) => {
-    const attempt = (accessToken: string | null): Promise<void> =>
-      new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", `${BASE}/api/v2/files:upload`);
-        if (accessToken) xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-        };
-        xhr.onload = async () => {
-          if (xhr.status < 300) return resolve();
-          try {
-            const parsed = JSON.parse(xhr.responseText) as ApiEnvelope<never>;
-            reject(new ApiError(xhr.status, parsed.error?.message ?? xhr.statusText, parsed.error?.code));
-          } catch {
-            reject(new ApiError(xhr.status, xhr.statusText));
-          }
-        };
-        xhr.onerror = () => reject(new ApiError(0, "Network error"));
-        xhr.send(formData);
-      });
+    const file = formData.get("file");
+    if (!(file instanceof File)) {
+      return Promise.reject(new ApiError(0, "No file in form data"));
+    }
+    const folderId = formData.get("folder_id");
+    const folderStr = typeof folderId === "string" ? folderId : "";
 
-    return attempt(tokenStore.getAccess()).catch(async (err) => {
-      if (err instanceof ApiError && err.status === 401) {
-        const refreshToken = tokenStore.getRefresh();
-        if (refreshToken) {
-          const res = await fetch(`${BASE}/api/v2/auth/refresh`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ refresh_token: refreshToken }),
-          });
-          const body = await parseEnvelope<AuthTokens>(res);
-          if (res.ok && body?.data) {
-            tokenStore.set(body.data);
-            return attempt(body.data.access_token);
-          }
+    return new Promise<void>((resolve, reject) => {
+      const token = tokenStore.getAccess();
+      const endpoint = `${BASE}/api/v2/files/tus/`;
+      // Same-origin prefix used to filter resumable entries left over from
+      // earlier sessions. If the cached upload URL doesn't share scheme +
+      // host with the current page, the browser would refuse to PATCH it
+      // (cross-origin preflight + redirect), so drop it.
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const upload = new tus.Upload(file, {
+        endpoint,
+        retryDelays: [0, 1000, 3000, 5000, 10000],
+        chunkSize: 8 * 1024 * 1024,
+        metadata: {
+          filename: file.name,
+          filetype: file.type || "application/octet-stream",
+          folder_id: folderStr,
+        },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        onError: (err) => reject(new ApiError(0, err.message || "Upload failed")),
+        onProgress: (sent, total) => {
+          if (onProgress && total > 0) onProgress(Math.round((sent / total) * 100));
+        },
+        onSuccess: () => resolve(),
+      });
+      upload.findPreviousUploads().then((previous) => {
+        const usable = previous.filter((p) => p.uploadUrl && p.uploadUrl.startsWith(origin));
+        if (usable.length > 0) {
+          upload.resumeFromPreviousUpload(usable[0]);
         }
-        tokenStore.clear();
-        if (typeof window !== "undefined") window.location.href = "/login";
-      }
-      throw err;
+        upload.start();
+      });
     });
   },
 
@@ -215,6 +233,30 @@ export const files = {
   update: (id: string, data: Partial<{ name: string; folder_id: string | null; is_starred: boolean }>) =>
     request<{ message: string }>(`/api/v2/files/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/api/v2/files/${id}`, { method: "DELETE" }),
+
+  /** Streams a zip of the selected files + folder trees. Triggers browser download. */
+  downloadArchive: async (file_ids: string[], folder_ids: string[]) => {
+    const token = tokenStore.getAccess();
+    const res = await fetch(`${BASE}/api/v2/files:download-archive`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ file_ids, folder_ids }),
+    });
+    if (!res.ok) {
+      const body = await parseEnvelope<never>(res);
+      throw new ApiError(res.status, body?.error?.message ?? res.statusText, body?.error?.code);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "mycloud.zip";
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 export const folders = {
@@ -230,7 +272,7 @@ export const folders = {
 
 export const shares = {
   list: () => request<{ shares: Share[] }>("/api/v2/shares"),
-  create: (data: { file_id?: string; folder_id?: string; permission?: string; password?: string; expires_at?: string }) =>
+  create: (data: { file_id?: string; folder_id?: string; permission?: string; password?: string; expires_at?: string; download_limit?: number }) =>
     request<{ token: string; url: string }>("/api/v2/shares", { method: "POST", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/api/v2/shares/${id}`, { method: "DELETE" }),
   resolve: (token: string, sharePassword?: string) =>
@@ -241,6 +283,160 @@ export const shares = {
   downloadUrl: (token: string) => `${BASE}/api/v2/public/shares/${token}:download`,
 };
 
+export interface FileVersion {
+  version_no: number;
+  size_bytes: number;
+  created_at: string;
+  created_by: string;
+  username?: string;
+}
+
+export const versions = {
+  list: (fileId: string) =>
+    request<{ versions: FileVersion[] }>(`/api/v2/files/${fileId}/versions`),
+  restore: (fileId: string, versionNo: number) =>
+    request<{ message: string; now_current: number }>(
+      `/api/v2/files/${fileId}/versions/${versionNo}:restore`,
+      { method: "POST" },
+    ),
+  downloadUrl: (fileId: string, versionNo: number) =>
+    `${BASE}/api/v2/files/${fileId}/versions/${versionNo}:download`,
+  previewUrl: (fileId: string, versionNo: number) =>
+    `${BASE}/api/v2/files/${fileId}/versions/${versionNo}:preview`,
+};
+
+export interface Comment {
+  id: string;
+  user_id: string;
+  username: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  editable: boolean;
+}
+
+export const comments = {
+  list: (fileId: string) =>
+    request<{ comments: Comment[] }>(`/api/v2/files/${fileId}/comments`),
+  create: (fileId: string, body: string) =>
+    request<{ id: string }>(`/api/v2/files/${fileId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }),
+  update: (id: string, body: string) =>
+    request<{ message: string }>(`/api/v2/comments/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ body }),
+    }),
+  delete: (id: string) =>
+    request<void>(`/api/v2/comments/${id}`, { method: "DELETE" }),
+};
+
+export interface SmartFolderQuery {
+  q?: string;
+  mime_prefix?: string;
+  tags?: string[];
+  modified_after?: string;
+  modified_before?: string;
+  starred?: boolean;
+  in_folder?: string;
+}
+
+export interface SmartFolder {
+  id: string;
+  name: string;
+  query: SmartFolderQuery;
+  color?: string;
+  created_at: string;
+}
+
+export const smartFolders = {
+  list: () => request<{ smart_folders: SmartFolder[] }>("/api/v2/smart-folders"),
+  create: (data: { name: string; query: SmartFolderQuery; color?: string }) =>
+    request<{ id: string }>("/api/v2/smart-folders", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<{ name: string; query: SmartFolderQuery; color: string }>) =>
+    request<{ message: string }>(`/api/v2/smart-folders/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/api/v2/smart-folders/${id}`, { method: "DELETE" }),
+  results: (id: string) => request<{ files: FileItem[]; name: string }>(`/api/v2/smart-folders/${id}/results`),
+};
+
+export interface UploadRequest {
+  id: string;
+  token: string;
+  url: string;
+  folder_id?: string;
+  folder_name?: string;
+  expires_at?: string;
+  max_files?: number;
+  used_files: number;
+  has_password: boolean;
+  created_at: string;
+}
+
+export const requests = {
+  list: () => request<{ requests: UploadRequest[] }>("/api/v2/upload-requests"),
+  create: (data: { folder_id?: string; expires_at?: string; max_files?: number; password?: string }) =>
+    request<{ id: string; token: string; url: string }>("/api/v2/upload-requests", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => request<void>(`/api/v2/upload-requests/${id}`, { method: "DELETE" }),
+  resolve: (token: string, password?: string) =>
+    request<{
+      token: string;
+      folder_name?: string;
+      expires_at?: string;
+      max_files?: number;
+      uploads_remaining?: number;
+      used_files: number;
+    }>(`/api/v2/public/uploads/${token}`, { noAuth: true, sharePassword: password }),
+  uploadUrl: (token: string) => `${BASE}/api/v2/public/uploads/${token}`,
+};
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  created_at: string;
+}
+
+export const tags = {
+  list: () => request<{ tags: Tag[] }>("/api/v2/tags"),
+  create: (data: { name: string; color?: string }) =>
+    request<{ id: string; name: string; color: string }>("/api/v2/tags", {
+      method: "POST", body: JSON.stringify(data),
+    }),
+  update: (id: string, data: { name?: string; color?: string }) =>
+    request<{ message: string }>(`/api/v2/tags/${id}`, {
+      method: "PATCH", body: JSON.stringify(data),
+    }),
+  delete: (id: string) => request<void>(`/api/v2/tags/${id}`, { method: "DELETE" }),
+  attachFile: (fileId: string, tagId: string) =>
+    request<void>(`/api/v2/files/${fileId}/tags/${tagId}`, { method: "POST" }),
+  detachFile: (fileId: string, tagId: string) =>
+    request<void>(`/api/v2/files/${fileId}/tags/${tagId}`, { method: "DELETE" }),
+  attachFolder: (folderId: string, tagId: string) =>
+    request<void>(`/api/v2/folders/${folderId}/tags/${tagId}`, { method: "POST" }),
+  detachFolder: (folderId: string, tagId: string) =>
+    request<void>(`/api/v2/folders/${folderId}/tags/${tagId}`, { method: "DELETE" }),
+};
+
+export const grants = {
+  list: (direction: "incoming" | "outgoing") =>
+    request<{ grants: ShareGrant[] }>(`/api/v2/shares/grants?direction=${direction}`),
+  create: (data: { file_id?: string; folder_id?: string; grantee: string; permission?: GrantPermission }) =>
+    request<{ id: string; permission: GrantPermission; grantee_id: string }>("/api/v2/shares/grants", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, permission: GrantPermission) =>
+    request<{ message: string }>(`/api/v2/shares/grants/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ permission }),
+    }),
+  delete: (id: string) => request<void>(`/api/v2/shares/grants/${id}`, { method: "DELETE" }),
+};
+
 export const trash = {
   list: () => request<{ items: TrashItem[] }>("/api/v2/trash"),
   restore: (id: string) => request<{ message: string }>(`/api/v2/trash/${id}:restore`, { method: "POST" }),
@@ -249,7 +445,29 @@ export const trash = {
 };
 
 export const search = {
-  query: (q: string) => request<{ results: SearchResult[] }>(`/api/v2/search?q=${encodeURIComponent(q)}`),
+  query: (q: string, scope: "name" | "content" | "both" = "both") =>
+    request<{ results: SearchResult[] }>(`/api/v2/search?q=${encodeURIComponent(q)}&scope=${scope}`),
+};
+
+export interface Photo {
+  id: string;
+  name: string;
+  size_bytes: number;
+  mime_type: string;
+  width?: number;
+  height?: number;
+  shot_at: string;
+  created_at: string;
+}
+
+export const photos = {
+  list: (from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    return request<{ photos: Photo[] }>(`/api/v2/photos?${params}`);
+  },
+  thumbUrl: (id: string) => `${BASE}/api/v2/files/${id}/thumb`,
 };
 
 export const admin = {

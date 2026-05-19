@@ -19,13 +19,14 @@ import (
 )
 
 type App struct {
-	Config   config.Config
-	DB       *sql.DB
-	Redis    *redis.Client
-	Auth     *auth.Manager
-	Router   chi.Router
-	Client   *http.Client
-	StartUTC time.Time
+	Config     config.Config
+	DB         *sql.DB
+	Redis      *redis.Client
+	Auth       *auth.Manager
+	Router     chi.Router
+	Client     *http.Client
+	TusHandler http.Handler
+	StartUTC   time.Time
 
 	// updateMu guards the fields below, which track activity-log writes for updates.
 	updateMu              sync.Mutex
@@ -36,6 +37,10 @@ type App struct {
 func New(cfg config.Config) (http.Handler, func(), error) {
 	sqlDB, err := db.Open(cfg.DBDSN)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := db.Migrate(sqlDB); err != nil {
+		_ = sqlDB.Close()
 		return nil, nil, err
 	}
 	redisClient := redisc.New(cfg.RedisAddr, cfg.RedisPassword)
@@ -51,10 +56,21 @@ func New(cfg config.Config) (http.Handler, func(), error) {
 		Client:   &http.Client{Timeout: 20 * time.Second},
 		StartUTC: time.Now().UTC(),
 	}
+	tusHandler, err := app.mountTus("/api/v2/files/tus/")
+	if err != nil {
+		_ = sqlDB.Close()
+		_ = redisClient.Close()
+		return nil, nil, err
+	}
+	app.TusHandler = tusHandler
 	router := app.routes()
 	app.Router = router
 
+	workersCtx, stopWorkers := context.WithCancel(context.Background())
+	app.startWorkers(workersCtx)
+
 	cleanup := func() {
+		stopWorkers()
 		_ = sqlDB.Close()
 		_ = redisClient.Close()
 	}

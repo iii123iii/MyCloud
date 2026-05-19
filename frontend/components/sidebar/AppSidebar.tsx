@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import useSWR from "swr";
 import {
-  LayoutDashboard, Clock, Star, Share2, Trash2,
+  LayoutDashboard, Clock, Star, Share2, Trash2, Camera, Tag, Bookmark,
   Settings, Shield, LogOut, Cloud,
 } from "lucide-react";
+import { tags as tagsApi, smartFolders as smartFoldersApi } from "@/lib/api";
 
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
@@ -22,6 +23,7 @@ const navItems = [
   { label: "My Files",  href: "/dashboard", icon: LayoutDashboard },
   { label: "Recent",   href: "/recent",    icon: Clock },
   { label: "Starred",  href: "/starred",   icon: Star },
+  { label: "Photos",   href: "/photos",    icon: Camera },
   { label: "Shared",   href: "/shared",    icon: Share2 },
   { label: "Trash",    href: "/trash",     icon: Trash2 },
 ];
@@ -65,6 +67,9 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        <TagsGroup />
+        <SmartFoldersGroup />
 
         {user?.role === "admin" && (
           <>
@@ -123,3 +128,62 @@ export function AppSidebar() {
     </Sidebar>
   );
 }
+
+function TagsGroup() {
+  const { data } = useSWR("tags", () => tagsApi.list(), { shouldRetryOnError: false });
+  const tags = data?.tags ?? [];
+  if (!tags.length) return null;
+  return (
+    <>
+      <SidebarSeparator />
+      <SidebarGroup>
+        <SidebarGroupLabel>Tags</SidebarGroupLabel>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {tags.map((t) => (
+              <SidebarMenuItem key={t.id}>
+                <SidebarMenuButton render={<Link href={`/dashboard?tag=${t.id}`} />}>
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: t.color }} />
+                  <span className="truncate">{t.name}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    </>
+  );
+}
+
+function SmartFoldersGroup() {
+  const { data } = useSWR("smart-folders", () => smartFoldersApi.list(), { shouldRetryOnError: false });
+  const items = data?.smart_folders ?? [];
+  if (!items.length) return null;
+  return (
+    <>
+      <SidebarSeparator />
+      <SidebarGroup>
+        <SidebarGroupLabel>Smart folders</SidebarGroupLabel>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {items.map((sf) => (
+              <SidebarMenuItem key={sf.id}>
+                <SidebarMenuButton render={<Link href={`/dashboard?smart=${sf.id}`} />}>
+                  {sf.color ? (
+                    <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: sf.color }} />
+                  ) : (
+                    <Bookmark className="h-4 w-4" />
+                  )}
+                  <span className="truncate">{sf.name}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    </>
+  );
+}
+
+// Mark imports as used so TS doesn't complain on unused side-imports.
+void Tag;

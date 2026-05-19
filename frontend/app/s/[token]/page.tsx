@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Download, Cloud, Lock, FileText } from "lucide-react";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatServerDateTime } from "@/lib/format";
 import { toast } from "sonner";
 
 // Next.js 16: params is a Promise
@@ -25,21 +25,32 @@ export default function PublicSharePage({ params }: PageProps) {
     file_name?: string;
     file_size?: number;
     mime_type?: string;
+    expires_at?: string;
+    downloads_remaining?: number;
+    download_limit?: number;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [gone, setGone] = useState(false);
 
   const resolve = async (pwd?: string) => {
     setLoading(true);
     setNotFound(false);
+    setGone(false);
     try {
       const info = await sharesApi.resolve(token, pwd);
       setShareInfo(info);
       setPasswordRequired(false);
     } catch (err: unknown) {
-      // Check if password is required
-      if (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 401) {
-        setPasswordRequired(true);
+      if (err && typeof err === "object" && "status" in err) {
+        const status = (err as { status: number }).status;
+        if (status === 401) {
+          setPasswordRequired(true);
+        } else if (status === 410) {
+          setGone(true);
+        } else {
+          setNotFound(true);
+        }
       } else {
         setNotFound(true);
       }
@@ -54,8 +65,12 @@ export default function PublicSharePage({ params }: PageProps) {
   const handleDownload = async () => {
     const url = sharesApi.downloadUrl(token);
     try {
-      // Can't easily set custom header on anchor—use fetch + blob
       const res = await fetch(url, password ? { headers: { "X-Share-Password": password } } : undefined);
+      if (res.status === 410) {
+        setGone(true);
+        setShareInfo(null);
+        return;
+      }
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
@@ -64,6 +79,8 @@ export default function PublicSharePage({ params }: PageProps) {
       a.download = shareInfo?.file_name ?? "download";
       a.click();
       URL.revokeObjectURL(blobUrl);
+      // Refresh remaining-download counter
+      void resolve(password || undefined);
     } catch {
       toast.error("Download failed");
     }
@@ -88,7 +105,18 @@ export default function PublicSharePage({ params }: PageProps) {
             <CardContent className="py-8 text-center">
               <p className="font-medium">Share not found</p>
               <p className="text-sm text-muted-foreground mt-1">
-                This link may have expired or been deleted.
+                This link may have been deleted.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {gone && (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <p className="font-medium">Link unavailable</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                This share has expired or reached its download limit.
               </p>
             </CardContent>
           </Card>
@@ -140,6 +168,16 @@ export default function PublicSharePage({ params }: PageProps) {
                 )}
                 {shareInfo.mime_type && (
                   <p className="text-xs text-muted-foreground">{shareInfo.mime_type}</p>
+                )}
+                {(shareInfo.expires_at || shareInfo.download_limit) && (
+                  <div className="mt-2 pt-2 border-t text-xs text-muted-foreground space-y-0.5">
+                    {shareInfo.expires_at && (
+                      <p>Expires {formatServerDateTime(shareInfo.expires_at)}</p>
+                    )}
+                    {shareInfo.download_limit !== undefined && (
+                      <p>{shareInfo.downloads_remaining ?? shareInfo.download_limit} of {shareInfo.download_limit} downloads remaining</p>
+                    )}
+                  </div>
                 )}
               </div>
               <Button className="w-full" onClick={handleDownload}>

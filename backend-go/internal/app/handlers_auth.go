@@ -82,7 +82,7 @@ func (a *App) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	writeActivity(ctx, a.DB, &id, "setup_complete", "user", id, clientIP(r), map[string]any{"email": payload.Email})
+	writeActivity(ctx, a.DB, &id, "user.setup_complete", "user", id, clientIP(r), map[string]any{"email": payload.Email})
 	httpapi.JSON(w, http.StatusCreated, map[string]any{"message": "Setup complete"}, nil)
 }
 
@@ -140,7 +140,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tokens["username"] = payload.Username
 	tokens["email"] = payload.Email
 	tokens["must_change_password"] = false
-	writeActivity(r.Context(), a.DB, &id, "register", "user", id, clientIP(r), nil)
+	writeActivity(r.Context(), a.DB, &id, "user.register", "user", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusCreated, tokens, nil)
 }
 
@@ -187,7 +187,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	tokens["username"] = username
 	tokens["email"] = email
 	tokens["must_change_password"] = mustChange
-	writeActivity(r.Context(), a.DB, &id, "login", "user", id, clientIP(r), nil)
+	writeActivity(r.Context(), a.DB, &id, "user.login", "user", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, tokens, nil)
 }
 
@@ -300,7 +300,7 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	writeActivity(r.Context(), a.DB, &userID, "change_password", "user", userID, clientIP(r), nil)
+	writeActivity(r.Context(), a.DB, &userID, "user.change_password", "user", userID, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Password updated"}, nil)
 }
 

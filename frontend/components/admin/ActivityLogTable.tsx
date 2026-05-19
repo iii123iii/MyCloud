@@ -15,9 +15,19 @@ const actionColor: Record<string, string> = {
 
 interface Props {
   logs: ActivityLog[];
+  /** When true, omit the User column (use this in per-user views). */
+  hideUserColumn?: boolean;
 }
 
-export function ActivityLogTable({ logs }: Props) {
+function actionVariant(action: string): "default" | "secondary" | "destructive" | "outline" {
+  // Match against the leading namespace ("file.upload" → "file") and legacy
+  // underscore form ("file_upload" → "file") so both render consistently.
+  const head = action.split(/[._]/)[0];
+  return (actionColor[head] ?? actionColor[action] ?? "outline") as
+    "default" | "secondary" | "destructive" | "outline";
+}
+
+export function ActivityLogTable({ logs, hideUserColumn }: Props) {
   if (!logs.length) {
     return <p className="text-muted-foreground text-sm py-4">No activity yet.</p>;
   }
@@ -28,7 +38,7 @@ export function ActivityLogTable({ logs }: Props) {
         <TableHeader>
           <TableRow>
             <TableHead>Action</TableHead>
-            <TableHead>User</TableHead>
+            {!hideUserColumn && <TableHead>User</TableHead>}
             <TableHead>Resource</TableHead>
             <TableHead>IP</TableHead>
             <TableHead>When</TableHead>
@@ -38,11 +48,13 @@ export function ActivityLogTable({ logs }: Props) {
           {logs.map((log) => (
             <TableRow key={log.id}>
               <TableCell>
-                <Badge variant={(actionColor[log.action] ?? "outline") as "default" | "secondary" | "destructive" | "outline"}>
+                <Badge variant={actionVariant(log.action)}>
                   {log.action}
                 </Badge>
               </TableCell>
-              <TableCell className="text-sm">{log.username ?? "—"}</TableCell>
+              {!hideUserColumn && (
+                <TableCell className="text-sm">{log.username ?? "—"}</TableCell>
+              )}
               <TableCell className="text-sm text-muted-foreground">
                 {log.resource_type ?? "—"}
               </TableCell>

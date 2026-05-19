@@ -62,10 +62,29 @@ export interface Share {
   token: string;
   permission: "read" | "write";
   expires_at?: string;
+  download_limit?: number;
+  download_count: number;
   created_at: string;
   file_id?: string;
   file_name?: string;
   folder_id?: string;
+}
+
+// ─── Grants (per-user sharing) ───────────────────────────────────────────────
+export type GrantPermission = "viewer" | "editor" | "owner";
+
+export interface ShareGrant {
+  id: string;
+  permission: GrantPermission;
+  created_at: string;
+  grantee_id: string;
+  granted_by: string;
+  grantee_name?: string;
+  granter_name?: string;
+  file_id?: string;
+  file_name?: string;
+  folder_id?: string;
+  folder_name?: string;
 }
 
 // ─── Search ──────────────────────────────────────────────────────────────────

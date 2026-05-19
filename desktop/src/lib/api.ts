@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import * as tus from "tus-js-client";
 import { Agent } from "undici";
 import type { StateStore } from "./store";
 import type { LoginPayload, RemoteEntity, StorageStats, User } from "./types";
@@ -245,26 +246,63 @@ export class ApiClient {
 
   /* ---- files ----------------------------------------------------- */
 
+  /**
+   * Resumable upload via the tus protocol (F6). The returned id comes from the
+   * X-File-ID response header set by the backend's PreFinishResponseCallback.
+   *
+   * resumeUrl, if provided, allows resuming an interrupted upload from a prior
+   * sync cycle. The caller passes back whatever was persisted in the local
+   * mapping. The new upload URL (if a fresh upload) is delivered via the
+   * onResumeUrl callback so callers can persist it before the bytes start.
+   */
   async uploadFile(
     filePath: string,
     folderId: string | null,
+    options?: {
+      resumeUrl?: string;
+      onResumeUrl?: (url: string) => void;
+      onProgress?: (sent: number, total: number) => void;
+    },
   ): Promise<RemoteEntity> {
     const fileName = path.basename(filePath);
-    const blob =
-      typeof fs.openAsBlob === "function"
-        ? await fs.openAsBlob(filePath)
-        : new Blob([await fs.promises.readFile(filePath)]);
+    const stats = await fs.promises.stat(filePath);
+    const stream = fs.createReadStream(filePath);
+    const endpoint = `${this.baseUrl}/api/v2/files/tus/`;
+    const accessToken = this.accessToken;
 
-    const form = new FormData();
-    form.append("file", blob, fileName);
-    if (folderId) {
-      form.append("folder_id", String(folderId));
-    }
-
-    return (await this.request<RemoteEntity>("/api/v2/files:upload", {
-      method: "POST",
-      body: form,
-    }))!;
+    return new Promise<RemoteEntity>((resolve, reject) => {
+      const upload = new tus.Upload(stream as unknown as Blob, {
+        endpoint,
+        uploadUrl: options?.resumeUrl,
+        retryDelays: [0, 1000, 3000, 5000, 10000],
+        chunkSize: 8 * 1024 * 1024,
+        uploadSize: stats.size,
+        metadata: {
+          filename: fileName,
+          filetype: "application/octet-stream",
+          folder_id: folderId ?? "",
+        },
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        onAfterResponse: async (req, res) => {
+          const url = (upload as unknown as { url?: string }).url;
+          if (url && req.getMethod() === "POST" && options?.onResumeUrl) {
+            options.onResumeUrl(url);
+          }
+          // Tus places the file ID in X-File-ID on the final 201.
+          const fileID = res.getHeader("X-File-ID");
+          if (fileID) {
+            (upload as unknown as { _fileID?: string })._fileID = fileID;
+          }
+        },
+        onError: (err) => reject(new ApiError(err.message || "Upload failed", 0)),
+        onProgress: (sent, total) => options?.onProgress?.(sent, total),
+        onSuccess: () => {
+          const fileID = (upload as unknown as { _fileID?: string })._fileID ?? "";
+          resolve({ id: fileID } as RemoteEntity);
+        },
+      });
+      upload.start();
+    });
   }
 
   /**

@@ -236,3 +236,10 @@ func FinalPath(storagePath, userID, fileID string) string {
 func TempPath(storagePath, fileID string) string {
 	return filepath.Join(storagePath, "tmp", fileID+".enc.tmp")
 }
+
+// VersionPath returns the on-disk path for version N of a file, used by F5
+// (versioning). Versions are sibling blobs to the current version with a
+// .v{n}.enc suffix.
+func VersionPath(storagePath, userID, fileID string, versionNo int) string {
+	return filepath.Join(storagePath, userID, fmt.Sprintf("%s.v%d.enc", fileID, versionNo))
+}

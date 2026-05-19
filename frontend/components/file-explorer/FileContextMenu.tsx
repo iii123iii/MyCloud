@@ -7,12 +7,18 @@ import {
   ContextMenuSeparator, ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
-  Download, Eye, Star, StarOff, Share2, Pencil, Trash2, FolderOpen, FolderInput,
+  Download, Edit3, Eye, Star, StarOff, Share2, Pencil, MessageSquare, Trash2,
+  FolderOpen, FolderInput, History, Archive,
 } from "lucide-react";
-import { files as filesApi, folders as foldersApi, tokenStore } from "@/lib/api";
+import { files as filesApi, folders as foldersApi, tokenStore, type FileVersion } from "@/lib/api";
 import { ShareDialog } from "@/components/modals/ShareDialog";
 import { RenameDialog } from "@/components/modals/RenameDialog";
 import { MoveDialog } from "@/components/modals/MoveDialog";
+import { VersionHistoryDialog } from "@/components/modals/VersionHistoryDialog";
+import { CommentsDialog } from "@/components/modals/CommentsDialog";
+import { EditFileDialog } from "@/components/modals/EditFileDialog";
+import { PreviewModal } from "@/components/modals/PreviewModal";
+import { getEditMode } from "@/lib/file-kind";
 import type { FileItem, FolderItem } from "@/lib/types";
 
 interface Props {
@@ -25,9 +31,19 @@ interface Props {
 }
 
 export function FileContextMenu({ children, file, folder, onPreview, onOpenFolder, onMutate }: Props) {
-  const [shareOpen, setShareOpen]   = useState(false);
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [moveOpen, setMoveOpen]     = useState(false);
+  const [shareOpen, setShareOpen]         = useState(false);
+  const [renameOpen, setRenameOpen]       = useState(false);
+  const [moveOpen, setMoveOpen]           = useState(false);
+  const [versionsOpen, setVersionsOpen]   = useState(false);
+  const [commentsOpen, setCommentsOpen]   = useState(false);
+  const [editOpen, setEditOpen]           = useState(false);
+  // Holds the FileVersion currently being previewed via the Eye button in
+  // VersionHistoryDialog. Separate from the regular PreviewModal (which lives
+  // at the FileExplorer level) so version previews don't have to thread
+  // through every component.
+  const [previewVersion, setPreviewVersion] = useState<FileVersion | null>(null);
+
+  const editable = !!file && getEditMode(file) !== null;
 
   const handleDownload = async () => {
     if (!file) return;
@@ -92,6 +108,12 @@ export function FileContextMenu({ children, file, folder, onPreview, onOpenFolde
               Preview
             </ContextMenuItem>
           )}
+          {file && editable && (
+            <ContextMenuItem onClick={() => setEditOpen(true)}>
+              <Edit3 className="h-4 w-4 mr-2" />
+              Edit
+            </ContextMenuItem>
+          )}
           {file && (
             <ContextMenuItem onClick={handleDownload}>
               <Download className="h-4 w-4 mr-2" />
@@ -121,6 +143,32 @@ export function FileContextMenu({ children, file, folder, onPreview, onOpenFolde
               Share
             </ContextMenuItem>
           )}
+          {file && (
+            <ContextMenuItem onClick={() => setCommentsOpen(true)}>
+              <MessageSquare className="h-4 w-4 mr-2" />
+              Comments
+            </ContextMenuItem>
+          )}
+          {file && (
+            <ContextMenuItem onClick={() => setVersionsOpen(true)}>
+              <History className="h-4 w-4 mr-2" />
+              Version history
+            </ContextMenuItem>
+          )}
+          {folder && (
+            <ContextMenuItem
+              onClick={async () => {
+                try {
+                  await filesApi.downloadArchive([], [folder.id]);
+                } catch {
+                  toast.error("Download failed");
+                }
+              }}
+            >
+              <Archive className="h-4 w-4 mr-2" />
+              Download as zip
+            </ContextMenuItem>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem
             onClick={handleDelete}
@@ -138,6 +186,64 @@ export function FileContextMenu({ children, file, folder, onPreview, onOpenFolde
           onOpenChange={setShareOpen}
           fileId={file.id}
           fileName={file.name}
+        />
+      )}
+
+      {file && (
+        <VersionHistoryDialog
+          open={versionsOpen}
+          onOpenChange={setVersionsOpen}
+          fileId={file.id}
+          fileName={file.name}
+          fileMime={file.mime_type}
+          onRestored={onMutate}
+          onPreviewVersion={(v) => {
+            setVersionsOpen(false);
+            setPreviewVersion(v);
+          }}
+        />
+      )}
+
+      {file && (
+        <CommentsDialog
+          open={commentsOpen}
+          onOpenChange={setCommentsOpen}
+          fileId={file.id}
+          fileName={file.name}
+        />
+      )}
+
+      {file && editable && (
+        <EditFileDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          file={file}
+          onSaved={onMutate}
+        />
+      )}
+
+      {/* Dedicated PreviewModal for the version-preview flow. Kept separate
+          from the FileExplorer-managed one so we don't have to plumb the
+          version state through every component. "Back to current" closes this
+          and asks the parent to open the regular preview. */}
+      {file && previewVersion && (
+        <PreviewModal
+          file={file}
+          open
+          onOpenChange={(o) => !o && setPreviewVersion(null)}
+          version={{
+            no: previewVersion.version_no,
+            createdAt: previewVersion.created_at,
+            username: previewVersion.username,
+          }}
+          onClearVersion={() => {
+            setPreviewVersion(null);
+            onPreview?.();
+          }}
+          onRestored={() => {
+            onMutate();
+            setPreviewVersion(null);
+          }}
         />
       )}
 

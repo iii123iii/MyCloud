@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { LayoutGrid, List, Upload, FolderPlus, Search, Loader2 } from "lucide-react";
 
 import { files as filesApi, folders as foldersApi } from "@/lib/api";
+import { collectDroppedFiles, planDroppedTree, type DroppedFile } from "@/lib/folder-drop";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -18,6 +19,8 @@ import { FileListView } from "./FileListView";
 import { BreadcrumbNav } from "./BreadcrumbNav";
 import { NewFolderDialog } from "@/components/modals/NewFolderDialog";
 import { PreviewModal } from "@/components/modals/PreviewModal";
+import { EditFileDialog } from "@/components/modals/EditFileDialog";
+import { getEditMode } from "@/lib/file-kind";
 import type { FileItem, FolderItem } from "@/lib/types";
 
 const PAGE_SIZE = 60;
@@ -31,6 +34,7 @@ export function FileExplorer() {
   const [viewMode, setViewMode]       = useState<"grid" | "list">("grid");
   const [searchQ, setSearchQ]         = useState("");
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [editFile, setEditFile]       = useState<FileItem | null>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [isLoadMoreVisible, setIsLoadMoreVisible] = useState(false);
 
@@ -135,30 +139,112 @@ export function FileExplorer() {
     setFilePageCount(1);
   }, [folderId, setFilePageCount]);
 
-  // ── Drag-and-drop upload ──────────────────────────────────────────────
+  // ── Drag-and-drop upload (files + folders) ────────────────────────────
+  const uploadOne = useCallback(async (file: File, targetFolder: string | undefined, label?: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (targetFolder) fd.append("folder_id", targetFolder);
+    const display = label ?? file.name;
+    const tid = toast.loading(`Uploading ${display}…`);
+    try {
+      await filesApi.upload(fd, (pct) =>
+        toast.loading(`Uploading ${display} — ${pct}%`, { id: tid }),
+      );
+      toast.success(`${display} uploaded`, { id: tid });
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Upload failed", { id: tid });
+    }
+  }, []);
+
+  // Flat drop (no folders) — used when dropzone's default getFilesFromEvent runs.
   const onDrop = useCallback(async (accepted: File[]) => {
     for (const file of accepted) {
-      const fd = new FormData();
-      fd.append("file", file);
-      if (folderId) fd.append("folder_id", folderId);
-      const tid = toast.loading(`Uploading ${file.name}…`);
-      try {
-        await filesApi.upload(fd, (pct) =>
-          toast.loading(`Uploading ${file.name} — ${pct}%`, { id: tid })
-        );
-        toast.success(`${file.name} uploaded`, { id: tid });
-        mutateFiles();
-      } catch (err: unknown) {
-        toast.error(err instanceof Error ? err.message : "Upload failed", { id: tid });
-      }
+      await uploadOne(file, folderId);
     }
-  }, [folderId, mutateFiles]);
+    mutateFiles();
+  }, [folderId, mutateFiles, uploadOne]);
+
+  // Folder-aware drop — walks the FS entry tree, creates the directory
+  // hierarchy server-side, then uploads each file in parallel batches.
+  const onFolderAwareDrop = useCallback(async (items: DroppedFile[]) => {
+    const { directories, filesByDir } = planDroppedTree(items);
+    const total = items.length;
+    let done = 0;
+    const aggregateId = toast.loading(`Uploading 0/${total} files…`);
+    try {
+      // Create folder hierarchy, breadth-first.
+      const dirIdMap = new Map<string, string>();
+      for (const dir of directories) {
+        const segs = dir.split("/");
+        const parentDir = segs.slice(0, -1).join("/");
+        const parentId = parentDir ? dirIdMap.get(parentDir) : folderId;
+        try {
+          const created = await foldersApi.create({ name: segs[segs.length - 1], parent_id: parentId ?? null });
+          dirIdMap.set(dir, created.id);
+        } catch {
+          // If duplicate, look up via list — best effort. For now, skip and let
+          // backend reject the upload if folder really doesn't exist.
+        }
+      }
+      // Upload files in chunks of 4.
+      const CONCURRENCY = 4;
+      const entries = Array.from(filesByDir.entries());
+      const queue: Array<() => Promise<void>> = [];
+      for (const [dir, files] of entries) {
+        const targetFolderId = dir ? dirIdMap.get(dir) : folderId;
+        for (const item of files) {
+          queue.push(async () => {
+            const fd = new FormData();
+            fd.append("file", item.file);
+            if (targetFolderId) fd.append("folder_id", targetFolderId);
+            try {
+              await filesApi.upload(fd);
+            } catch (err: unknown) {
+              toast.error(err instanceof Error ? err.message : `Failed: ${item.relativePath}`);
+            } finally {
+              done++;
+              toast.loading(`Uploading ${done}/${total} files…`, { id: aggregateId });
+            }
+          });
+        }
+      }
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (queue.length) {
+          const job = queue.shift();
+          if (job) await job();
+        }
+      });
+      await Promise.all(workers);
+      toast.success(`Uploaded ${done}/${total} files`, { id: aggregateId });
+    } finally {
+      mutateFiles();
+      mutateFolders();
+    }
+  }, [folderId, mutateFiles, mutateFolders]);
 
   const { getRootProps, getInputProps, isDragActive, open: openFileDialog } = useDropzone({
-    onDrop, noClick: true, noKeyboard: true,
-    // Disable while the preview modal is open so dragging an image inside it
-    // doesn't accidentally trigger an upload.
+    onDrop,
+    noClick: true,
+    noKeyboard: true,
     disabled: !!previewFile,
+    // Custom extractor: prefer folder-aware walker when DataTransferItem is available.
+    getFilesFromEvent: async (evt): Promise<File[]> => {
+      const dt = (evt as DragEvent).dataTransfer;
+      if (!dt) {
+        const fe = evt as unknown as { target: HTMLInputElement };
+        return Array.from(fe.target?.files ?? []);
+      }
+      const items = await collectDroppedFiles(dt);
+      // If anything has a slash in its relativePath, we have folders.
+      const hasFolders = items.some((it) => it.relativePath.includes("/"));
+      if (hasFolders) {
+        // Sidestep dropzone's onDrop — handle the whole tree ourselves and
+        // return [] so it doesn't try to upload them as flat files.
+        void onFolderAwareDrop(items);
+        return [];
+      }
+      return items.map((it) => it.file);
+    },
   });
 
   // ── Folder navigation ─────────────────────────────────────────────────
@@ -310,6 +396,24 @@ export function FileExplorer() {
           open={!!previewFile}
           onOpenChange={(o) => !o && setPreviewFile(null)}
           onNavigate={setPreviewFile}
+          onEdit={
+            getEditMode(previewFile) !== null
+              ? () => {
+                  // Hand off from preview → editor without losing the file.
+                  setEditFile(previewFile);
+                  setPreviewFile(null);
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {editFile && (
+        <EditFileDialog
+          open={!!editFile}
+          onOpenChange={(o) => !o && setEditFile(null)}
+          file={editFile}
+          onSaved={mutateAll}
         />
       )}
     </div>

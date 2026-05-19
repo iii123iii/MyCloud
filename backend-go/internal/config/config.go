@@ -22,6 +22,25 @@ type Config struct {
 	UpdateLogPath       string
 	Version             string
 	GitHubRepo          string
+
+	// Rate limit capacity per window. Set capacity to 0 to disable.
+	RateLimitLoginPerMin      int
+	RateLimitLoginPerUserMin  int
+	RateLimitRegisterPerHour  int
+	RateLimitSharePwdPerMin   int
+	RateLimitPublicUploadHour int
+	RateLimitTusPerMin        int
+
+	// Maximum number of historical versions retained per file.
+	MaxVersionsPerFile int
+
+	// OnlyOffice Document Server JWT secret + public URL.
+	OfficeJWTSecret string
+	OfficeURL       string
+	// Public-facing URL of THIS backend, used by OnlyOffice to fetch and POST
+	// to our document and callback endpoints. When empty we default to the
+	// request's Host header at runtime.
+	PublicBackendURL string
 }
 
 func Load() (Config, error) {
@@ -42,7 +61,11 @@ func Load() (Config, error) {
 
 	return Config{
 		ListenAddr:          envOrFile("LISTEN_ADDR", ":8080"),
-		DBDSN:               fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4,utf8", dbUser, dbPass, dbHost, dbPort, dbName),
+		// clientFoundRows=true makes RowsAffected() return the number of rows
+		// that MATCHED the WHERE clause, not just those whose values actually
+		// changed. Without it, an UPDATE like `SET used_bytes = used_bytes + 0`
+		// reports 0 rows affected and the quota check falsely rejects the upload.
+		DBDSN:               fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4,utf8&clientFoundRows=true", dbUser, dbPass, dbHost, dbPort, dbName),
 		AllowedOrigins:      splitCSV(envOrFile("ALLOWED_ORIGINS", "https://localhost")),
 		JWTSecret:           jwtSecret,
 		AccessTokenTTL:      envInt("ACCESS_TOKEN_TTL_SECONDS", 900),
@@ -55,6 +78,19 @@ func Load() (Config, error) {
 		UpdateLogPath:       envOrFile("MYCLOUD_UPDATE_LOG_PATH", "/data/logs/update.log"),
 		Version:             envOrFile("MYCLOUD_VERSION", "dev"),
 		GitHubRepo:          envOrFile("MYCLOUD_GITHUB_REPO", "iii123iii/MyCloud"),
+
+		RateLimitLoginPerMin:      envInt("RATE_LIMIT_LOGIN_PER_MIN", 10),
+		RateLimitLoginPerUserMin:  envInt("RATE_LIMIT_LOGIN_PER_USER_MIN", 5),
+		RateLimitRegisterPerHour:  envInt("RATE_LIMIT_REGISTER_PER_HOUR", 5),
+		RateLimitSharePwdPerMin:   envInt("RATE_LIMIT_SHARE_PWD_PER_MIN", 10),
+		RateLimitPublicUploadHour: envInt("RATE_LIMIT_PUBLIC_UPLOAD_PER_HOUR", 30),
+		RateLimitTusPerMin:        envInt("RATE_LIMIT_TUS_PER_MIN", 100),
+
+		MaxVersionsPerFile: envInt("MAX_VERSIONS_PER_FILE", 10),
+
+		OfficeJWTSecret:  envOrFile("OFFICE_JWT_SECRET", ""),
+		OfficeURL:        envOrFile("OFFICE_URL", ""),
+		PublicBackendURL: envOrFile("MYCLOUD_PUBLIC_BACKEND_URL", ""),
 	}, nil
 }
 

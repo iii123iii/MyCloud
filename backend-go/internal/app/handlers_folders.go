@@ -16,6 +16,10 @@ import (
 func (a *App) handleListFolders(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	parentID := r.URL.Query().Get("parent_id")
+	if r.URL.Query().Get("shared_with_me") == "1" {
+		a.listSharedFolders(w, r, userID)
+		return
+	}
 	query := `
 		SELECT id, name, parent_id, created_at, updated_at
 		FROM folders
@@ -57,6 +61,45 @@ func (a *App) handleListFolders(w http.ResponseWriter, r *http.Request) {
 	httpapi.JSON(w, http.StatusOK, map[string]any{"folders": folders}, nil)
 }
 
+// listSharedFolders returns folders directly granted to the caller.
+// Flat list — backend doesn't yet expose navigation into shared folder trees.
+func (a *App) listSharedFolders(w http.ResponseWriter, r *http.Request, userID string) {
+	rows, err := a.DB.QueryContext(r.Context(), `
+		SELECT fo.id, fo.name, fo.parent_id, fo.user_id, fo.created_at, fo.updated_at, g.permission
+		FROM folders fo
+		JOIN share_grants g ON g.folder_id = fo.id
+		WHERE g.grantee_user_id=? AND fo.is_deleted=0
+		ORDER BY fo.name ASC`, userID)
+	if err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, name, ownerID, createdAt, updatedAt, permission string
+		var parent sql.NullString
+		if err := rows.Scan(&id, &name, &parent, &ownerID, &createdAt, &updatedAt, &permission); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		item := map[string]any{
+			"id":         id,
+			"name":       name,
+			"owner_id":   ownerID,
+			"created_at": createdAt,
+			"updated_at": updatedAt,
+			"shared":     true,
+			"permission": permission,
+		}
+		if parent.Valid {
+			item["parent_id"] = parent.String
+		}
+		out = append(out, item)
+	}
+	httpapi.JSON(w, http.StatusOK, map[string]any{"folders": out}, nil)
+}
+
 func (a *App) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name     string  `json:"name"`
@@ -87,7 +130,7 @@ func (a *App) handleCreateFolder(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 		return
 	}
-	writeActivity(r.Context(), a.DB, &userID, "folder_create", "folder", id, clientIP(r), map[string]any{"name": payload.Name})
+	writeActivity(r.Context(), a.DB, &userID, "folder.create", "folder", id, clientIP(r), map[string]any{"name": payload.Name})
 	httpapi.JSON(w, http.StatusCreated, map[string]any{"id": id, "name": payload.Name, "parent_id": payload.ParentID}, nil)
 }
 
@@ -243,6 +286,7 @@ func (a *App) handleUpdateFolder(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
 		return
 	}
+	writeActivity(r.Context(), a.DB, &userID, "folder.update", "folder", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Updated"}, nil)
 }
 
@@ -253,5 +297,6 @@ func (a *App) handleDeleteFolder(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}
+	writeActivity(r.Context(), a.DB, &userID, "folder.delete", "folder", id, clientIP(r), nil)
 	httpapi.NoContent(w)
 }

@@ -17,6 +17,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -26,7 +29,7 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, parseServerDate } from "@/lib/format";
 
 const pwSchema = z.object({
   old_password: z.string().min(1, "Current password required"),
@@ -98,6 +101,13 @@ export default function SettingsPage() {
         <h1 className="text-xl font-semibold">Settings</h1>
       </div>
 
+      <Tabs defaultValue="account">
+        <TabsList>
+          <TabsTrigger value="account">Account</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="account" className="mt-4 space-y-6">
       {/* Profile */}
       <Card>
         <CardHeader>
@@ -117,7 +127,7 @@ export default function SettingsPage() {
                 <span className="text-muted-foreground">Role</span>
                 <span className="font-medium capitalize">{user.role}</span>
                 <span className="text-muted-foreground">Member since</span>
-                <span className="font-medium">{new Date(user.created_at).toLocaleDateString()}</span>
+                <span className="font-medium">{parseServerDate(user.created_at).toLocaleDateString()}</span>
               </div>
               <Separator />
               <div className="space-y-1.5">
@@ -186,6 +196,13 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
+        </TabsContent>
+
+        <TabsContent value="activity" className="mt-4">
+          <ActivitySection />
+        </TabsContent>
+      </Tabs>
+
       {/* ── Delete-account confirmation dialog ── */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent className="sm:max-w-md">
@@ -241,4 +258,16 @@ export default function SettingsPage() {
       </Dialog>
     </div>
   );
+}
+
+function ActivitySection() {
+  const { data, isLoading } = useSWR("me-activity", () => authApi.myActivity(100));
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-10 rounded" />)}
+      </div>
+    );
+  }
+  return <ActivityLogTable logs={data?.logs ?? []} hideUserColumn />;
 }

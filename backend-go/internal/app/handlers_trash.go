@@ -55,6 +55,7 @@ func (a *App) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 	}
 	affected, _ := res.RowsAffected()
 	if affected > 0 {
+		writeActivity(r.Context(), a.DB, &userID, "file.restore", "file", id, clientIP(r), nil)
 		httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Restored"}, nil)
 		return
 	}
@@ -71,6 +72,7 @@ func (a *App) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "restore_failed", err.Error())
 		return
 	}
+	writeActivity(r.Context(), a.DB, &userID, "folder.restore", "folder", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Restored"}, nil)
 }
 
@@ -78,6 +80,7 @@ func (a *App) handleDeleteTrashItem(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	id := chi.URLParam(r, "id")
 	if err := a.permanentlyDeleteFile(r.Context(), userID, id); err == nil {
+		writeActivity(r.Context(), a.DB, &userID, "file.purge", "file", id, clientIP(r), nil)
 		httpapi.NoContent(w)
 		return
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -92,6 +95,7 @@ func (a *App) handleDeleteTrashItem(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}
+	writeActivity(r.Context(), a.DB, &userID, "folder.purge", "folder", id, clientIP(r), nil)
 	httpapi.NoContent(w)
 }
 
@@ -135,5 +139,7 @@ func (a *App) handleEmptyTrash(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	writeActivity(r.Context(), a.DB, &userID, "trash.empty", "system", "", clientIP(r),
+		map[string]any{"files": len(fileIDs), "folders": len(folderIDs)})
 	httpapi.NoContent(w)
 }

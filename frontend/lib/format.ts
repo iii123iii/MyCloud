@@ -8,19 +8,46 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatDate(dateStr: string): string {
+  const d = parseServerDate(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
   try {
-    return format(new Date(dateStr), "MMM d, yyyy");
+    return format(d, "MMM d, yyyy");
   } catch {
     return dateStr;
   }
 }
 
 export function formatRelative(dateStr: string): string {
+  const d = parseServerDate(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
   try {
-    return formatDistanceToNow(new Date(dateStr), { addSuffix: true });
+    return formatDistanceToNow(d, { addSuffix: true });
   } catch {
     return dateStr;
   }
+}
+
+/**
+ * Parse a datetime string emitted by the Go backend.
+ *
+ * The MariaDB driver formats DATETIME columns as "2006-01-02 15:04:05" (UTC,
+ * space separator, no zone suffix). new Date() in JavaScript treats that as
+ * a local-time string on Safari and as Invalid Date on some engines. Replace
+ * the space with "T" and append "Z" to coerce it to a proper ISO-8601 UTC
+ * timestamp. Strings that already include "T" or a timezone are passed
+ * through unchanged.
+ */
+export function parseServerDate(dateStr: string): Date {
+  if (/[Tt]/.test(dateStr) || /[+-]\d{2}:?\d{2}$|Z$/.test(dateStr)) {
+    return new Date(dateStr);
+  }
+  return new Date(dateStr.replace(" ", "T") + "Z");
+}
+
+export function formatServerDateTime(dateStr: string): string {
+  const d = parseServerDate(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  return d.toLocaleString();
 }
 
 export function mimeToLabel(mime: string): string {

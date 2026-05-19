@@ -19,6 +19,7 @@ func (a *App) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	order := strings.ToUpper(r.URL.Query().Get("order"))
 	all := r.URL.Query().Get("all") == "1"
 	starred := r.URL.Query().Get("starred_only") == "1"
+	sharedWithMe := r.URL.Query().Get("shared_with_me") == "1"
 	page := qInt(r, "page", 1, 1, 100000)
 	pageSize := qInt(r, "page_size", 50, 1, 200)
 	offset := (page - 1) * pageSize
@@ -33,6 +34,10 @@ func (a *App) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 	if order != "DESC" {
 		order = "ASC"
+	}
+	if sharedWithMe {
+		a.listSharedFiles(w, r, userID, allowedSort[sort], order, page, pageSize, offset)
+		return
 	}
 	where := " WHERE user_id=? AND is_deleted=0"
 	args := []any{userID}
@@ -107,7 +112,7 @@ func (a *App) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "upload_failed"
-		if strings.Contains(err.Error(), "quota") {
+		if errors.Is(err, ErrQuotaExceeded) {
 			status = http.StatusRequestEntityTooLarge
 			code = "quota_exceeded"
 		} else if strings.Contains(err.Error(), "folder not found") {
@@ -117,8 +122,70 @@ func (a *App) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, status, code, err.Error())
 		return
 	}
-	writeActivity(r.Context(), a.DB, &userID, "file_upload", "file", data["id"].(string), clientIP(r), map[string]any{"name": filename})
+	writeActivity(r.Context(), a.DB, &userID, "file.upload", "file", data["id"].(string), clientIP(r), map[string]any{"name": filename})
+	if mime, _ := data["mime_type"].(string); mime != "" {
+		a.afterUploadCommit(r.Context(), data["id"].(string), mime)
+	}
 	httpapi.JSON(w, http.StatusCreated, data, nil)
+}
+
+// listSharedFiles returns files directly granted to the caller via share_grants.
+// Renders a flat list; navigation into shared folders is not yet supported on
+// the backend.
+func (a *App) listSharedFiles(w http.ResponseWriter, r *http.Request, userID, sortCol, order string, page, pageSize, offset int) {
+	var total int
+	if err := a.DB.QueryRowContext(r.Context(), `
+		SELECT COUNT(*) FROM files f
+		JOIN share_grants g ON g.file_id = f.id
+		WHERE g.grantee_user_id=? AND f.is_deleted=0`, userID).Scan(&total); err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	rows, err := a.DB.QueryContext(r.Context(), `
+		SELECT f.id, f.name, f.size_bytes, f.mime_type, f.folder_id, f.is_starred,
+		       f.created_at, f.updated_at, g.permission, f.user_id
+		FROM files f
+		JOIN share_grants g ON g.file_id = f.id
+		WHERE g.grantee_user_id=? AND f.is_deleted=0
+		ORDER BY `+sortCol+` `+order+` LIMIT ? OFFSET ?`, userID, pageSize, offset)
+	if err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	defer rows.Close()
+	files := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, name, mimeType, createdAt, updatedAt, permission, ownerID string
+		var sizeBytes int64
+		var folder sql.NullString
+		var starred bool
+		if err := rows.Scan(&id, &name, &sizeBytes, &mimeType, &folder, &starred, &createdAt, &updatedAt, &permission, &ownerID); err != nil {
+			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		item := map[string]any{
+			"id":         id,
+			"name":       name,
+			"size_bytes": sizeBytes,
+			"mime_type":  mimeType,
+			"is_starred": starred,
+			"created_at": createdAt,
+			"updated_at": updatedAt,
+			"shared":     true,
+			"permission": permission,
+			"owner_id":   ownerID,
+		}
+		if folder.Valid {
+			item["folder_id"] = folder.String
+		}
+		files = append(files, item)
+	}
+	httpapi.JSON(w, http.StatusOK, map[string]any{"files": files}, map[string]any{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"has_more":  page*pageSize < total,
+	})
 }
 
 func (a *App) handleStorageStats(w http.ResponseWriter, r *http.Request) {
@@ -141,13 +208,21 @@ func (a *App) handleStorageStats(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	id := chi.URLParam(r, "id")
+	if _, err := a.canAccessFile(r.Context(), userID, id, AccessViewer); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
+			return
+		}
+		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
 	var fileID, name, mimeType, createdAt, updatedAt string
 	var sizeBytes int64
 	var folder sql.NullString
 	var starred, deleted bool
 	err := a.DB.QueryRowContext(r.Context(), `
 		SELECT id, name, size_bytes, mime_type, folder_id, is_starred, is_deleted, created_at, updated_at
-		FROM files WHERE id=? AND user_id=?`, id, userID).
+		FROM files WHERE id=?`, id).
 		Scan(&fileID, &name, &sizeBytes, &mimeType, &folder, &starred, &deleted, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
@@ -247,6 +322,7 @@ func (a *App) handleUpdateFile(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
 		return
 	}
+	writeActivity(r.Context(), a.DB, &userID, "file.update", "file", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Updated"}, nil)
 }
 
@@ -263,7 +339,7 @@ func (a *App) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 		return
 	}
-	writeActivity(r.Context(), a.DB, &userID, "file_delete", "file", id, clientIP(r), nil)
+	writeActivity(r.Context(), a.DB, &userID, "file.delete", "file", id, clientIP(r), nil)
 	httpapi.NoContent(w)
 }
 

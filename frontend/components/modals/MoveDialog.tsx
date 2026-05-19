@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Folder, ChevronRight, Home } from "lucide-react";
 
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { files as filesApi, folders as foldersApi } from "@/lib/api";
@@ -88,7 +88,13 @@ export function MoveDialog({ open, onOpenChange, file, folder, onMoved }: Props)
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="truncate">Move &ldquo;{itemName}&rdquo;</DialogTitle>
+          <DialogTitle>Move {file ? "file" : "folder"}</DialogTitle>
+          <DialogDescription
+            className="truncate font-mono text-xs"
+            title={itemName}
+          >
+            {itemName}
+          </DialogDescription>
         </DialogHeader>
 
         {/* Breadcrumb inside picker */}

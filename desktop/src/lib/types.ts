@@ -52,6 +52,10 @@ export interface MappingEntry {
   type: "file" | "folder";
   remoteId: string;
   signature?: string;
+  /** SHA-256 of the local file content. Set after a successful dedup/upload. */
+  contentHash?: string;
+  /** Active tus upload URL — present while a resumable upload is in flight. */
+  tusUrl?: string;
 }
 
 export type RootMappings = Record<string, MappingEntry>;

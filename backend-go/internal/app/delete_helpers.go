@@ -87,6 +87,26 @@ func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) 
 	if err != nil {
 		return err
 	}
+
+	verRows, err := a.DB.QueryContext(ctx,
+		"SELECT storage_path, size_bytes FROM file_versions WHERE file_id=?", fileID)
+	if err != nil {
+		return err
+	}
+	var verPaths []string
+	var verBytes int64
+	for verRows.Next() {
+		var p string
+		var s int64
+		if err := verRows.Scan(&p, &s); err != nil {
+			verRows.Close()
+			return err
+		}
+		verPaths = append(verPaths, p)
+		verBytes += s
+	}
+	verRows.Close()
+
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -95,13 +115,36 @@ func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE id=? AND user_id=? AND is_deleted=1", fileID, userID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE users SET used_bytes=GREATEST(0, used_bytes-?) WHERE id=?", size, userID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE users SET used_bytes=GREATEST(0, used_bytes-?) WHERE id=?", size+verBytes, userID); err != nil {
 		return err
 	}
+
+	// Release blob_refs. Only physically remove a blob from disk when the
+	// last reference is dropped.
+	deleteAfter := []string{}
+	gone, err := releaseBlobRef(ctx, tx, path)
+	if err != nil {
+		return err
+	}
+	if gone {
+		deleteAfter = append(deleteAfter, path)
+	}
+	for _, p := range verPaths {
+		gone, err := releaseBlobRef(ctx, tx, p)
+		if err != nil {
+			return err
+		}
+		if gone {
+			deleteAfter = append(deleteAfter, p)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	_ = os.Remove(path)
+	for _, p := range deleteAfter {
+		_ = os.Remove(p)
+	}
 	return nil
 }
 
@@ -122,10 +165,10 @@ func (a *App) permanentlyDeleteFolder(ctx context.Context, userID, folderID stri
 	}
 	ph, folderArgs := inClause(ids)
 
-	// Collect file paths and total size before deleting.
+	// Collect file paths, file IDs and total size before deleting.
 	fileArgs := append([]any{userID}, folderArgs...)
 	rows, err := a.DB.QueryContext(ctx,
-		fmt.Sprintf("SELECT storage_path, size_bytes FROM files WHERE user_id=? AND folder_id IN %s", ph),
+		fmt.Sprintf("SELECT id, storage_path, size_bytes FROM files WHERE user_id=? AND folder_id IN %s", ph),
 		fileArgs...)
 	if err != nil {
 		return err
@@ -133,16 +176,40 @@ func (a *App) permanentlyDeleteFolder(ctx context.Context, userID, folderID stri
 	defer rows.Close()
 	var total int64
 	var paths []string
+	var fileIDs []string
 	for rows.Next() {
-		var path string
+		var id, path string
 		var size int64
-		if err := rows.Scan(&path, &size); err != nil {
+		if err := rows.Scan(&id, &path, &size); err != nil {
 			return err
 		}
 		paths = append(paths, path)
+		fileIDs = append(fileIDs, id)
 		total += size
 	}
 	rows.Close()
+
+	// Add up version blob paths for those files.
+	if len(fileIDs) > 0 {
+		filePH, fileIDArgs := inClause(fileIDs)
+		vrows, err := a.DB.QueryContext(ctx,
+			fmt.Sprintf("SELECT storage_path, size_bytes FROM file_versions WHERE file_id IN %s", filePH),
+			fileIDArgs...)
+		if err != nil {
+			return err
+		}
+		for vrows.Next() {
+			var p string
+			var s int64
+			if err := vrows.Scan(&p, &s); err != nil {
+				vrows.Close()
+				return err
+			}
+			paths = append(paths, p)
+			total += s
+		}
+		vrows.Close()
+	}
 
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -165,11 +232,25 @@ func (a *App) permanentlyDeleteFolder(ctx context.Context, userID, folderID stri
 			return err
 		}
 	}
+
+	// Release blob_refs for every collected path. Only physically delete a blob
+	// when the last reference is dropped.
+	deleteAfter := []string{}
+	for _, p := range paths {
+		gone, err := releaseBlobRef(ctx, tx, p)
+		if err != nil {
+			return err
+		}
+		if gone {
+			deleteAfter = append(deleteAfter, p)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	for _, path := range paths {
-		_ = os.Remove(path)
+	for _, p := range deleteAfter {
+		_ = os.Remove(p)
 	}
 	return nil
 }

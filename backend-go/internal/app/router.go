@@ -29,23 +29,44 @@ func (a *App) routes() chi.Router {
 		}, nil)
 	})
 
+	// Only the initial POST that creates an upload counts toward the tus
+	// rate-limit — subsequent PATCH/HEAD chunks are part of the same logical
+	// upload and would otherwise blow through the cap on any large file.
+	tusCreateLimit := a.rateLimit("tus", a.Config.RateLimitTusPerMin, time.Minute, func(r *http.Request, _ string) string {
+		if r.Method != http.MethodPost {
+			return "" // empty key skips the limiter
+		}
+		return userIDFrom(r)
+	})
+	loginIPLimit := a.rateLimit("login_ip", a.Config.RateLimitLoginPerMin, time.Minute, keyByIP)
+	loginUserLimit := a.rateLimit("login_user", a.Config.RateLimitLoginPerUserMin, time.Minute, keyByLoginField("email"))
+	registerLimit := a.rateLimit("register", a.Config.RateLimitRegisterPerHour, time.Hour, keyByIP)
+	publicUploadLimit := a.rateLimit("public_upload", a.Config.RateLimitPublicUploadHour, time.Hour, keyByIP)
+
 	r.Route("/api/v2", func(api chi.Router) {
 		api.Post("/setup/status", a.handleSetupStatus)
 		api.Post("/setup/complete", a.handleSetupComplete)
 
-		api.Post("/auth/login", a.handleLogin)
-		api.Post("/auth/register", a.handleRegister)
+		api.With(loginIPLimit, loginUserLimit).Post("/auth/login", a.handleLogin)
+		api.With(registerLimit).Post("/auth/register", a.handleRegister)
 		api.Post("/auth/refresh", a.handleRefresh)
 		api.Post("/auth/logout", a.handleLogout)
 
 		api.Group(func(authed chi.Router) {
 			authed.Use(a.requireAuth)
 			authed.Get("/auth/me", a.handleMe)
+			authed.Get("/auth/me/activity", a.handleMyActivity)
 			authed.Post("/auth/change-password", a.handleChangePassword)
 			authed.Delete("/auth/account", a.handleDeleteAccount)
 
 			authed.Get("/files", a.handleListFiles)
 			authed.Post("/files:upload", a.handleUploadFile)
+			authed.Post("/files:download-archive", a.handleDownloadArchive)
+			authed.Head("/files/by-hash", a.handleHasFileHash)
+			authed.Post("/files/by-hash", a.handleCreateFromHash)
+
+			// Tus resumable upload mounted at /api/v2/files/tus/*
+			authed.With(tusCreateLimit).Mount("/files/tus", http.StripPrefix("/api/v2/files/tus", a.TusHandler))
 			authed.Get("/files/{id}", a.handleFileInfo)
 			authed.Patch("/files/{id}", a.handleUpdateFile)
 			authed.Delete("/files/{id}", a.handleDeleteFile)
@@ -69,7 +90,46 @@ func (a *App) routes() chi.Router {
 			authed.Post("/shares", a.handleCreateShare)
 			authed.Delete("/shares/{id}", a.handleDeleteShare)
 
+			authed.Get("/files/{id}/thumb", a.handleFileThumb)
+			authed.Get("/photos", a.handleListPhotos)
+
+			authed.Get("/files/{id}/office-config", a.handleOfficeConfig)
+
+			authed.Get("/files/{id}/versions", a.handleListVersions)
+			authed.Post("/files/{id}/versions/{vno}:restore", a.handleRestoreVersion)
+			authed.Get("/files/{id}/versions/{vno}:download", a.handleDownloadVersion)
+			authed.Get("/files/{id}/versions/{vno}:preview", a.handlePreviewVersion)
+
+			authed.Get("/files/{id}/comments", a.handleListComments)
+			authed.Post("/files/{id}/comments", a.handleCreateComment)
+			authed.Patch("/comments/{id}", a.handleUpdateComment)
+			authed.Delete("/comments/{id}", a.handleDeleteComment)
+
+			authed.Get("/shares/grants", a.handleListGrants)
+			authed.Post("/shares/grants", a.handleCreateGrant)
+			authed.Patch("/shares/grants/{id}", a.handleUpdateGrant)
+			authed.Delete("/shares/grants/{id}", a.handleDeleteGrant)
+
+			authed.Get("/upload-requests", a.handleListUploadRequests)
+			authed.Post("/upload-requests", a.handleCreateUploadRequest)
+			authed.Delete("/upload-requests/{id}", a.handleDeleteUploadRequest)
+
+			authed.Get("/tags", a.handleListTags)
+			authed.Post("/tags", a.handleCreateTag)
+			authed.Patch("/tags/{id}", a.handleUpdateTag)
+			authed.Delete("/tags/{id}", a.handleDeleteTag)
+			authed.Post("/files/{id}/tags/{tagId}", a.handleAttachTagToFile)
+			authed.Delete("/files/{id}/tags/{tagId}", a.handleDetachTagFromFile)
+			authed.Post("/folders/{id}/tags/{tagId}", a.handleAttachTagToFolder)
+			authed.Delete("/folders/{id}/tags/{tagId}", a.handleDetachTagFromFolder)
+
 			authed.Get("/search", a.handleSearch)
+
+			authed.Get("/smart-folders", a.handleListSmartFolders)
+			authed.Post("/smart-folders", a.handleCreateSmartFolder)
+			authed.Patch("/smart-folders/{id}", a.handleUpdateSmartFolder)
+			authed.Delete("/smart-folders/{id}", a.handleDeleteSmartFolder)
+			authed.Get("/smart-folders/{id}/results", a.handleSmartFolderResults)
 
 			authed.Group(func(admin chi.Router) {
 				admin.Use(a.requireAdmin)
@@ -90,6 +150,15 @@ func (a *App) routes() chi.Router {
 
 		api.Get("/public/shares/{token}", a.handleResolveShare)
 		api.Get("/public/shares/{token}:download", a.handleDownloadShare)
+
+		api.Get("/public/uploads/{token}", a.handleResolveUploadRequest)
+		api.With(publicUploadLimit).Post("/public/uploads/{token}", a.handlePublicUploadToRequest)
+
+		// OnlyOffice fetches the document + posts back without auth tokens;
+		// the edit_key in the URL is the bearer of authority. Rate limit at the
+		// IP level since the document server's IP is fixed.
+		api.Get("/office/doc/{id}", a.handleOfficeDoc)
+		api.Post("/office/callback/{id}", a.handleOfficeCallback)
 	})
 
 	return r
@@ -117,8 +186,15 @@ func (a *App) cors(next http.Handler) http.Handler {
 				w.Header().Set("Vary", "Origin")
 			}
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Share-Password")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers",
+			"Authorization, Content-Type, X-Share-Password, "+
+				"Tus-Resumable, Upload-Length, Upload-Offset, Upload-Metadata, "+
+				"Upload-Defer-Length, Upload-Concat")
+		w.Header().Set("Access-Control-Expose-Headers",
+			"Location, Tus-Resumable, Upload-Offset, Upload-Length, "+
+				"Upload-Metadata, Upload-Defer-Length, Upload-Concat, X-File-ID")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,HEAD,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Max-Age", "86400")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

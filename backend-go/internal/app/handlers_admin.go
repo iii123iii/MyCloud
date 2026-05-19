@@ -349,9 +349,9 @@ func (a *App) handleAdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 					}
 					a.updateMu.Unlock()
 					if shouldLog {
-						action := "update_succeeded"
+						action := "system.update.succeeded"
 						if statusStr == "failed" {
-							action = "update_failed"
+							action = "system.update.failed"
 						}
 						uid := userIDFrom(r)
 						msg, _ := status["message"].(string)
@@ -401,7 +401,7 @@ func (a *App) handleAdminUpdateApply(w http.ResponseWriter, r *http.Request) {
 	}
 	// Record the update start in the activity log and mark this session as having started one.
 	uid := userIDFrom(r)
-	writeActivity(r.Context(), a.DB, &uid, "update_started", "system", payload["target_version"], clientIP(r), map[string]any{
+	writeActivity(r.Context(), a.DB, &uid, "system.update.started", "system", payload["target_version"], clientIP(r), map[string]any{
 		"target_version":  payload["target_version"],
 		"current_version": payload["current_version"],
 	})

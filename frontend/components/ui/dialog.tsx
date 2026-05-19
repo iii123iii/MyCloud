@@ -84,7 +84,9 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-2", className)}
+      // pr-8 leaves room for the absolute-positioned close button on
+      // DialogContent so long titles don't slide under the X.
+      className={cn("flex flex-col gap-2 pr-8", className)}
       {...props}
     />
   )

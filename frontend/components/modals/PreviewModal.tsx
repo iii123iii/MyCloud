@@ -1,18 +1,27 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { AlertCircle, ChevronLeft, ChevronRight, Download, Loader2, X } from "lucide-react";
-import { files as filesApi, tokenStore } from "@/lib/api";
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Loader2, MessageSquare, Pencil, RotateCcw, X } from "lucide-react";
+import { CommentsPanel } from "./CommentsPanel";
+import { files as filesApi, versions as versionsApi, tokenStore } from "@/lib/api";
 import {
   isPreviewable,
   formatBytes,
-  PREVIEWABLE_APPLICATION_TYPES,
+  formatRelative,
   PREVIEWABLE_SPREADSHEET_TYPES,
   PREVIEWABLE_WORD_TYPES,
 } from "@/lib/format";
+import { MIME_TO_LANG, isTextBased, getEditMode } from "@/lib/file-kind";
 import type { FileItem } from "@/lib/types";
+
+export interface PreviewVersion {
+  no: number;
+  createdAt: string;
+  username?: string;
+}
 
 interface Props {
   file: FileItem;
@@ -22,48 +31,25 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   /** Called when the user navigates to a different file. */
   onNavigate?: (file: FileItem) => void;
+  /**
+   * When set, preview the historical bytes for this version of the file
+   * instead of the current contents. Hides comments + edit; shows a Restore
+   * button instead. Prev/next navigation is also suppressed.
+   */
+  version?: PreviewVersion;
+  /** Clear the version overlay → back to the current contents. */
+  onClearVersion?: () => void;
+  /** Called after a successful version restore — caller should refresh state. */
+  onRestored?: () => void;
+  /**
+   * Open the file in the editor. When set + the file is editable, an Edit
+   * button appears in the header alongside Download.
+   */
+  onEdit?: () => void;
 }
 
-// Maps MIME types to shiki language identifiers
-const MIME_TO_LANG: Record<string, string> = {
-  "text/javascript":           "javascript",
-  "text/typescript":           "typescript",
-  "text/html":                 "html",
-  "text/css":                  "css",
-  "text/xml":                  "xml",
-  "text/markdown":             "markdown",
-  "text/x-markdown":           "markdown",
-  "text/yaml":                 "yaml",
-  "text/x-yaml":               "yaml",
-  "text/x-python":             "python",
-  "text/x-java":               "java",
-  "text/x-c":                  "c",
-  "text/x-c++src":             "cpp",
-  "text/x-csharp":             "csharp",
-  "text/x-go":                 "go",
-  "text/x-rust":               "rust",
-  "text/x-sh":                 "shellscript",
-  "text/x-shellscript":        "shellscript",
-  "text/x-ruby":               "ruby",
-  "text/x-php":                "php",
-  "text/x-swift":              "swift",
-  "text/x-kotlin":             "kotlin",
-  "application/json":          "json",
-  "application/ld+json":       "json",
-  "application/xml":           "xml",
-  "application/javascript":    "javascript",
-  "application/x-javascript":  "javascript",
-  "application/x-yaml":        "yaml",
-  "application/x-sh":          "shellscript",
-  "application/x-shellscript": "shellscript",
-  "application/x-httpd-php":   "php",
-  "application/graphql":       "graphql",
-};
-
-/** Returns true for MIME types that should be fetched as plain text */
-function isTextBased(mime: string): boolean {
-  return mime.startsWith("text/") || PREVIEWABLE_APPLICATION_TYPES.has(mime);
-}
+// (MIME_TO_LANG + isTextBased are imported from @/lib/file-kind so the editor
+//  components can reuse the same classification.)
 
 // ─── CSV helpers ────────────────────────────────────────────────────────────
 
@@ -73,12 +59,12 @@ const MAX_DOCUMENT_PREVIEW_BYTES = 10 * 1024 * 1024;
 const MAX_BINARY_PREVIEW_BYTES = 25 * 1024 * 1024;
 
 function getPreviewSizeLimitMessage(file: FileItem): string | null {
-  const { mime_type: mime, size_bytes: size } = file;
+  const { mime_type: mime, size_bytes: size, name } = file;
 
   if (!isPreviewable(mime)) {
     return "Preview not available for this file type.";
   }
-  if (isTextBased(mime) && size > MAX_TEXT_PREVIEW_BYTES) {
+  if (isTextBased(mime, name) && size > MAX_TEXT_PREVIEW_BYTES) {
     return `This text file is too large to preview in the browser (${formatBytes(size)}). Download it instead.`;
   }
   if ((PREVIEWABLE_SPREADSHEET_TYPES.has(mime) || PREVIEWABLE_WORD_TYPES.has(mime)) && size > MAX_DOCUMENT_PREVIEW_BYTES) {
@@ -196,7 +182,10 @@ function SpreadsheetViewer({ data }: { data: Record<string, { rows: string[][]; 
 
 // ─── Main modal ─────────────────────────────────────────────────────────────
 
-export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate }: Props) {
+export function PreviewModal({
+  file, files = [], open, onOpenChange, onNavigate,
+  version, onClearVersion, onRestored, onEdit,
+}: Props) {
   const [blobUrl, setBlobUrl]                     = useState<string | null>(null);
   const [textContent, setTextContent]             = useState<string | null>(null);
   const [highlightedHtml, setHighlightedHtml]     = useState<string | null>(null);
@@ -207,10 +196,15 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
   const [fetchError, setFetchError]               = useState<string | null>(null);
   const [previewNotice, setPreviewNotice]         = useState<string | null>(null);
   const [loading, setLoading]                     = useState(true);
+  const [showComments, setShowComments]           = useState(false);
   const blobUrlRef = useRef<string | null>(null);
 
+  const isVersionView = !!version;
+
   // ── Compute navigation neighbours (only among previewable files) ─────────
-  const previewableFiles = files.filter((f) => isPreviewable(f.mime_type));
+  // Disabled while viewing a historical version — the version belongs to one
+  // specific file and stepping to a neighbour would conflate timelines.
+  const previewableFiles = isVersionView ? [] : files.filter((f) => isPreviewable(f.mime_type));
   const currentIndex     = previewableFiles.findIndex((f) => f.id === file.id);
   const prevFile         = currentIndex > 0 ? previewableFiles[currentIndex - 1] : null;
   const nextFile         = currentIndex < previewableFiles.length - 1 ? previewableFiles[currentIndex + 1] : null;
@@ -255,7 +249,11 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
     const token = tokenStore.getAccess();
     const controller = new AbortController();
 
-    fetch(filesApi.previewUrl(file.id), {
+    const fetchUrl = version
+      ? versionsApi.previewUrl(file.id, version.no)
+      : filesApi.previewUrl(file.id);
+
+    fetch(fetchUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       signal: controller.signal,
     })
@@ -302,7 +300,7 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
         }
 
         // ── Plain text / code ──────────────────────────────────────────────
-        if (isTextBased(mime)) {
+        if (isTextBased(mime, file.name)) {
           const text = await res.text();
 
           if (mime === "text/csv") {
@@ -349,7 +347,11 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
         blobUrlRef.current = null;
       }
     };
-  }, [open, file.id, file.mime_type]);
+    // Refetch is driven by id/mime/version-no only — name/size changes don't
+    // require reloading the blob, and we don't want to refetch on every
+    // re-render that creates a new `file` object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, file.id, file.mime_type, file.name, version?.no]);
 
   const handleDownload = async () => {
     try {
@@ -374,6 +376,19 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
   const mime = file.mime_type;
   // Word docs get a full-page Google-Docs-style layout; everything else keeps the centred card layout.
   const isDocPreview = PREVIEWABLE_WORD_TYPES.has(mime);
+  const editable = !isVersionView && !!onEdit && getEditMode(file) !== null;
+
+  const handleRestoreVersion = async () => {
+    if (!version) return;
+    try {
+      await versionsApi.restore(file.id, version.no);
+      toast.success(`Restored version ${version.no}`);
+      onRestored?.();
+      onClearVersion?.();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Restore failed");
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -393,6 +408,28 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
+            {!isVersionView && (
+              <Button
+                variant={showComments ? "default" : "ghost"}
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setShowComments((v) => !v)}
+                aria-label="Toggle comments"
+              >
+                <MessageSquare className="h-4 w-4" />
+              </Button>
+            )}
+            {editable && (
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit} aria-label="Edit file">
+                <Pencil className="h-4 w-4" />
+              </Button>
+            )}
+            {isVersionView && (
+              <Button variant="default" size="sm" onClick={handleRestoreVersion}>
+                <RotateCcw className="h-4 w-4 mr-1.5" />
+                Restore v{version.no}
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handleDownload}>
               <Download className="h-4 w-4 mr-1.5" />
               Download
@@ -402,6 +439,27 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
             </Button>
           </div>
         </DialogHeader>
+
+        {isVersionView && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 shrink-0">
+            <div className="text-xs min-w-0 truncate">
+              Viewing <span className="font-mono">v{version.no}</span>
+              {" "}from {formatRelative(version.createdAt)}
+              {version.username ? <> · by {version.username}</> : null}
+            </div>
+            {onClearVersion && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                onClick={onClearVersion}
+              >
+                <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+                Back to current
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* ── Content area (relative so nav arrows can be absolutely positioned) ── */}
         <div className="relative flex-1 min-h-0 flex">
@@ -591,6 +649,8 @@ export function PreviewModal({ file, files = [], open, onOpenChange, onNavigate 
               </pre>
             )}
           </div>
+
+          {showComments && !isVersionView && <CommentsPanel fileId={file.id} />}
         </div>
       </DialogContent>
     </Dialog>

@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "chokidar": "^4.0.3",
+    "tus-js-client": "^4.3.1",
     "undici": "^7.16.0"
   },
   "devDependencies": {
