@@ -17,10 +17,12 @@ import (
 	"mycloud/backend-go/internal/storage"
 )
 
-// extractTextLimit caps how much text we store per file. Larger than this
-// is rare in practice; truncation keeps MEDIUMTEXT rows manageable and
-// FULLTEXT indexing fast.
-const extractTextLimit = 1 << 20 // 1 MiB
+// extractTextLimit caps how much text we store per file. Raised this
+// from 1 MiB to 4 MiB so contracts, books, and long documentation stay
+// fully searchable. MEDIUMTEXT supports up to ~16 MiB so we still have
+// headroom; FULLTEXT indexing time scales near-linearly with size and
+// 4 MiB extracts complete in under a few hundred ms on commodity hardware.
+const extractTextLimit = 4 << 20 // 4 MiB
 
 // processExtract decrypts the file at fileID, extracts plain text from the
 // supported formats, and upserts it into file_text. Called by the q:extract

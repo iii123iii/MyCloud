@@ -13,19 +13,35 @@ type ApiEnvelope<T> = {
   error?: { code: string; message: string; details?: unknown };
 };
 
+// Storage keys are also exported from lib/storage-keys.ts for places that
+// want to reference them without pulling in the API client. Keep the
+// constants in lockstep — these are the canonical names.
 const ACCESS_KEY = "mc_access";
 const REFRESH_KEY = "mc_refresh";
+// The access-token JTI is stored alongside the token itself so the
+// WebSocketProvider can watch for `session_revoked` events with our own JTI
+// and kick us out immediately. The server now sends access_jti explicitly
+// in auth responses; we used to decode it from the JWT body, which was
+// fragile (depended on payload shape) and unnecessary.
+const ACCESS_JTI_KEY = "mc_access_jti";
 
 export const tokenStore = {
   getAccess: (): string | null => (typeof window !== "undefined" ? localStorage.getItem(ACCESS_KEY) : null),
   getRefresh: (): string | null => (typeof window !== "undefined" ? localStorage.getItem(REFRESH_KEY) : null),
-  set(tokens: Pick<AuthTokens, "access_token" | "refresh_token">) {
+  getAccessJTI: (): string | null => (typeof window !== "undefined" ? localStorage.getItem(ACCESS_JTI_KEY) : null),
+  set(tokens: Pick<AuthTokens, "access_token" | "refresh_token" | "access_jti">) {
     localStorage.setItem(ACCESS_KEY, tokens.access_token);
     localStorage.setItem(REFRESH_KEY, tokens.refresh_token);
+    if (tokens.access_jti) {
+      localStorage.setItem(ACCESS_JTI_KEY, tokens.access_jti);
+    } else {
+      localStorage.removeItem(ACCESS_JTI_KEY);
+    }
   },
   clear() {
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
+    localStorage.removeItem(ACCESS_JTI_KEY);
   },
 };
 
@@ -44,7 +60,13 @@ async function parseEnvelope<T>(res: Response): Promise<ApiEnvelope<T> | null> {
   return res.json().catch(() => null);
 }
 
-async function requestEnvelope<T>(
+// requestEnvelope and request are exported for callers that need the
+// full envelope (meta + data) or a typed unwrapped data payload. Routing
+// every API call through these gives free: bearer attach, 401 → refresh →
+// retry, uniform error parsing, rate-limit headers. Components that
+// previously used raw `fetch()` (SelectionToolbar, FileContextMenu, photos
+// page) should migrate here so a stolen-token refresh works for them too.
+export async function requestEnvelope<T>(
   path: string,
   options: RequestInit & { noAuth?: boolean; sharePassword?: string } = {}
 ): Promise<ApiEnvelope<T> | null> {
@@ -78,7 +100,12 @@ async function requestEnvelope<T>(
         res = await doFetch();
       } else {
         tokenStore.clear();
-        if (typeof window !== "undefined") window.location.href = "/login";
+        if (typeof window !== "undefined") {
+          const here = window.location.pathname + window.location.search;
+          const next =
+            here && here !== "/login" ? `?next=${encodeURIComponent(here)}` : "";
+          window.location.href = `/login${next}`;
+        }
       }
     }
   }
@@ -98,12 +125,48 @@ async function requestEnvelope<T>(
   return parseEnvelope<T>(res);
 }
 
-async function request<T>(
+export async function request<T>(
   path: string,
   options: RequestInit & { noAuth?: boolean; sharePassword?: string; raw?: boolean } = {}
 ): Promise<T> {
   const body = await requestEnvelope<T>(path, options);
   return (body?.data ?? undefined) as T;
+}
+
+// fetchAuthed is a small escape hatch for callers that need the raw Response
+// (binary downloads, streaming) but still want bearer attach + 401 refresh
+// retry. Throws ApiError on non-OK so callers don't have to repeat the
+// error-extraction dance.
+export async function fetchAuthed(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = tokenStore.getAccess();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  let res = await fetch(`${BASE}${path}`, { ...init, headers });
+  if (res.status === 401) {
+    const refreshToken = tokenStore.getRefresh();
+    if (refreshToken) {
+      const refreshRes = await fetch(`${BASE}/api/v2/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const refreshBody = await parseEnvelope<AuthTokens>(refreshRes);
+      if (refreshRes.ok && refreshBody?.data) {
+        tokenStore.set(refreshBody.data);
+        headers.set("Authorization", `Bearer ${refreshBody.data.access_token}`);
+        res = await fetch(`${BASE}${path}`, { ...init, headers });
+      } else {
+        tokenStore.clear();
+        if (typeof window !== "undefined") {
+          const here = window.location.pathname + window.location.search;
+          const next =
+            here && here !== "/login" ? `?next=${encodeURIComponent(here)}` : "";
+          window.location.href = `/login${next}`;
+        }
+      }
+    }
+  }
+  return res;
 }
 
 export const auth = {
@@ -155,6 +218,25 @@ export const auth = {
     }),
 };
 
+// Per-device session management.
+export interface Session {
+  jti: string;
+  device_label: string;
+  user_agent: string;
+  ip_address: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at?: string;
+  // True for the row matching the requesting device's JTI. Backend tags
+  // this so the UI can disable Revoke on the row (you sign out instead).
+  is_current: boolean;
+}
+
+export const sessions = {
+  list: () => request<{ sessions: Session[] }>("/api/v2/me/sessions"),
+  revoke: (jti: string) => request<void>(`/api/v2/me/sessions/${encodeURIComponent(jti)}`, { method: "DELETE" }),
+};
+
 export const files = {
   list: async (params?: {
     folder_id?: string; sort?: string; order?: string;
@@ -204,7 +286,15 @@ export const files = {
       const upload = new tus.Upload(file, {
         endpoint,
         retryDelays: [0, 1000, 3000, 5000, 10000],
-        chunkSize: 8 * 1024 * 1024,
+        // parallelUploads was previously set to 3 — that requires the server to
+        // advertise the tus `concatenation` extension AND to accept
+        // partial uploads without the full metadata (filename/folder_id
+        // only land on the final POST). Our PreUploadCreateCallback
+        // rejects that, so client-side concat 404s on the very first
+        // POST. Until the server callback is reworked to defer
+        // validation to the final concat call, keep uploads serial.
+        // The smaller chunk size still wins on high-latency links.
+        chunkSize: 4 * 1024 * 1024,
         metadata: {
           filename: file.name,
           filetype: file.type || "application/octet-stream",
@@ -234,15 +324,24 @@ export const files = {
     request<{ message: string }>(`/api/v2/files/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/api/v2/files/${id}`, { method: "DELETE" }),
 
+  // Copy a (readable) file into a destination the caller can write to.
+  // folder_id null/omitted = the caller's own root. The copy is owned by the
+  // destination's owner and shares the underlying blob server-side.
+  copy: (id: string, folder_id?: string | null) =>
+    request<{ id: string }>(`/api/v2/files/${id}:copy`, {
+      method: "POST",
+      body: JSON.stringify({ folder_id: folder_id ?? null }),
+    }),
+
   /** Streams a zip of the selected files + folder trees. Triggers browser download. */
   downloadArchive: async (file_ids: string[], folder_ids: string[]) => {
-    const token = tokenStore.getAccess();
-    const res = await fetch(`${BASE}/api/v2/files:download-archive`, {
+    // Route through fetchAuthed so a stale access token gets transparently
+    // refreshed mid-download instead of failing the user with a generic
+    // 401. Previously this used raw fetch and bypassed the refresh
+    // pipeline entirely.
+    const res = await fetchAuthed(`/api/v2/files:download-archive`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file_ids, folder_ids }),
     });
     if (!res.ok) {
@@ -261,6 +360,9 @@ export const files = {
 
 export const folders = {
   list: (parent_id?: string) => request<{ folders: FolderItem[] }>(`/api/v2/folders${parent_id ? `?parent_id=${parent_id}` : ""}`),
+  // Top-level folders shared with the caller (the entry points of each shared
+  // tree). Used by the move picker so editors can relocate into shared folders.
+  sharedRoots: () => request<{ folders: FolderItem[] }>(`/api/v2/folders?shared_with_me=1`),
   path: (id: string) => request<{ folders: FolderItem[] }>(`/api/v2/folders/${id}/path`),
   get: (id: string) => request<FolderItem>(`/api/v2/folders/${id}`),
   create: (data: { name: string; parent_id?: string | null }) =>
@@ -268,11 +370,18 @@ export const folders = {
   update: (id: string, data: { name?: string; parent_id?: string | null }) =>
     request<{ message: string }>(`/api/v2/folders/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/api/v2/folders/${id}`, { method: "DELETE" }),
+  // Copy a (readable) folder subtree into a destination the caller can write
+  // to. parent_id null/omitted = the caller's own root.
+  copy: (id: string, parent_id?: string | null) =>
+    request<{ id: string }>(`/api/v2/folders/${id}:copy`, {
+      method: "POST",
+      body: JSON.stringify({ parent_id: parent_id ?? null }),
+    }),
 };
 
 export const shares = {
   list: () => request<{ shares: Share[] }>("/api/v2/shares"),
-  create: (data: { file_id?: string; folder_id?: string; permission?: string; password?: string; expires_at?: string; download_limit?: number }) =>
+  create: (data: { file_id?: string; folder_id?: string; permission?: string; password?: string; expires_at?: string; download_limit?: number; single_view?: boolean }) =>
     request<{ token: string; url: string }>("/api/v2/shares", { method: "POST", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/api/v2/shares/${id}`, { method: "DELETE" }),
   resolve: (token: string, sharePassword?: string) =>

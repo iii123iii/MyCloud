@@ -27,7 +27,7 @@ func (a *App) handleListUploadRequests(w http.ResponseWriter, r *http.Request) {
 		WHERE ur.created_by = ?
 		ORDER BY ur.created_at DESC`, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -39,7 +39,7 @@ func (a *App) handleListUploadRequests(w http.ResponseWriter, r *http.Request) {
 		var usedFiles int64
 		var hasPassword bool
 		if err := rows.Scan(&id, &token, &folderID, &folderName, &expiresAt, &maxFiles, &usedFiles, &createdAt, &hasPassword); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{
@@ -78,12 +78,12 @@ func (a *App) handleCreateUploadRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if payload.FolderID != nil && *payload.FolderID != "" {
-		if err := a.canAccessFolder(r.Context(), userID, *payload.FolderID, AccessEditor); err != nil {
+		if _, err := a.canAccessFolder(r.Context(), userID, *payload.FolderID, AccessEditor); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
@@ -102,12 +102,20 @@ func (a *App) handleCreateUploadRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	id := uuid.NewString()
 	token := randomToken()
+	// Parse the client-supplied expiry — the frontend sends ISO 8601
+	// (Date.toISOString() → "...Z"), which MariaDB rejects when handed
+	// straight to a DATETIME column. parseUserDatetime normalises it.
+	expiresAt, err := parseUserDatetime(payload.ExpiresAt)
+	if err != nil {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	if _, err := a.DB.ExecContext(r.Context(), `
 		INSERT INTO upload_requests (id, token, folder_id, created_by, expires_at, max_files, password_hash)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, token, payload.FolderID, userID, payload.ExpiresAt, payload.MaxFiles, passwordHash,
+		id, token, payload.FolderID, userID, expiresAt, payload.MaxFiles, passwordHash,
 	); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "request.create", "upload_request", id, clientIP(r), nil)
@@ -120,7 +128,7 @@ func (a *App) handleDeleteUploadRequest(w http.ResponseWriter, r *http.Request) 
 	res, err := a.DB.ExecContext(r.Context(),
 		"DELETE FROM upload_requests WHERE id=? AND created_by=?", id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -170,7 +178,7 @@ func (a *App) loadUploadRequest(r *http.Request, token string) (*uploadRequestRo
 	if passwordHash.Valid {
 		given := r.Header.Get("X-Share-Password")
 		if auth.ComparePassword(passwordHash.String, given) != nil {
-			return nil, errors.New("share password required")
+			return nil, ErrSharePassword
 		}
 	}
 	return &rec, nil
@@ -188,7 +196,7 @@ func (a *App) handleResolveUploadRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "password") {
+		if errors.Is(err, ErrSharePassword) {
 			httpapi.Error(w, http.StatusUnauthorized, "share_password_required", err.Error())
 			return
 		}
@@ -221,7 +229,7 @@ func (a *App) handlePublicUploadToRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "password") {
+		if errors.Is(err, ErrSharePassword) {
 			httpapi.Error(w, http.StatusUnauthorized, "share_password_required", err.Error())
 			return
 		}
@@ -238,7 +246,7 @@ func (a *App) handlePublicUploadToRequest(w http.ResponseWriter, r *http.Request
 		  AND (expires_at IS NULL OR expires_at > NOW())
 		  AND (max_files IS NULL OR used_files < max_files)`, token)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -270,11 +278,14 @@ func (a *App) handlePublicUploadToRequest(w http.ResponseWriter, r *http.Request
 		_, _ = a.DB.ExecContext(r.Context(),
 			"UPDATE upload_requests SET used_files = used_files - 1 WHERE token = ?", token)
 		_, _ = io.Copy(io.Discard, r.Body) // drain
-		if errors.Is(err, ErrQuotaExceeded) {
+		switch {
+		case errors.Is(err, ErrQuotaExceeded):
 			httpapi.Error(w, http.StatusRequestEntityTooLarge, "quota_exceeded", err.Error())
-			return
+		case errors.Is(err, ErrInvalidFilename):
+			httpapi.Error(w, http.StatusBadRequest, "invalid_filename", err.Error())
+		default:
+			httpapi.Error(w, http.StatusInternalServerError, "upload_failed", err.Error())
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "upload_failed", err.Error())
 		return
 	}
 	creator := rec.CreatedBy

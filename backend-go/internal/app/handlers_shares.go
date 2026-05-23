@@ -25,15 +25,21 @@ func randomToken() string {
 
 func (a *App) handleListShares(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
+	// Add a hard cap + offset paging — previously this listed every share
+	// the user had ever created in a single response, scaling poorly for
+	// power users and forming a DoS oracle (a user with a million shares
+	// could pin the server with one request).
+	limit, offset := readLimitOffset(r, 100, 500)
 	rows, err := a.DB.QueryContext(r.Context(), `
 		SELECT s.id, s.token, s.permission, s.expires_at, s.download_limit, s.download_count,
 		       s.created_at, s.file_id, f.name, s.folder_id
 		FROM shares s
 		LEFT JOIN files f ON f.id = s.file_id
 		WHERE s.created_by=?
-		ORDER BY s.created_at DESC`, userID)
+		ORDER BY s.created_at DESC
+		LIMIT ? OFFSET ?`, userID, limit, offset)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -45,7 +51,7 @@ func (a *App) handleListShares(w http.ResponseWriter, r *http.Request) {
 		var downloadCount int64
 		if err := rows.Scan(&id, &token, &permission, &expiresAt, &downloadLimit, &downloadCount,
 			&createdAt, &fileID, &fileName, &folderID); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{
@@ -72,7 +78,13 @@ func (a *App) handleListShares(w http.ResponseWriter, r *http.Request) {
 		}
 		shares = append(shares, item)
 	}
-	httpapi.JSON(w, http.StatusOK, map[string]any{"shares": shares}, nil)
+	if err := rows.Err(); err != nil {
+		respondDBError(w, r, err)
+		return
+	}
+	httpapi.JSON(w, http.StatusOK,
+		map[string]any{"shares": shares},
+		map[string]any{"limit": limit, "offset": offset, "has_more": len(shares) == limit})
 }
 
 func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +96,10 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		Password      string  `json:"password"`
 		ExpiresAt     *string `json:"expires_at"`
 		DownloadLimit *int    `json:"download_limit"`
+		// single_view=true means the share token is one-time-use. The
+		// first successful download stamps viewed_at; subsequent attempts
+		// see 410 Gone.
+		SingleView bool `json:"single_view"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -117,7 +133,7 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	case payload.FileID != nil:
 		var exists int
 		if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM files WHERE id=? AND user_id=? AND is_deleted=0", *payload.FileID, userID).Scan(&exists); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		if exists == 0 {
@@ -127,7 +143,7 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	case payload.FolderID != nil:
 		var exists int
 		if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=0", *payload.FolderID, userID).Scan(&exists); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		if exists == 0 {
@@ -141,11 +157,21 @@ func (a *App) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uuid.NewString()
 	token := randomToken()
+	singleViewFlag := 0
+	if payload.SingleView {
+		singleViewFlag = 1
+	}
+	// Same ISO-8601-with-Z issue as upload_requests — normalise before insert.
+	expiresAt, err := parseUserDatetime(payload.ExpiresAt)
+	if err != nil {
+		httpapi.Error(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	if _, err := a.DB.ExecContext(r.Context(), `
-		INSERT INTO shares (id, token, file_id, folder_id, created_by, permission, password_hash, expires_at, download_limit)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, token, payload.FileID, payload.FolderID, userID, payload.Permission, passwordHash, payload.ExpiresAt, payload.DownloadLimit); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		INSERT INTO shares (id, token, file_id, folder_id, created_by, permission, password_hash, expires_at, download_limit, single_view)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, token, payload.FileID, payload.FolderID, userID, payload.Permission, passwordHash, expiresAt, payload.DownloadLimit, singleViewFlag); err != nil {
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "share.create", "share", id, clientIP(r), nil)
@@ -157,7 +183,7 @@ func (a *App) handleDeleteShare(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	res, err := a.DB.ExecContext(r.Context(), "DELETE FROM shares WHERE id=? AND created_by=?", id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
@@ -201,7 +227,7 @@ func (a *App) loadShare(r *http.Request, token string) (map[string]any, *storage
 	if passwordHash.Valid {
 		sharePassword := r.Header.Get("X-Share-Password")
 		if auth.ComparePassword(passwordHash.String, sharePassword) != nil {
-			return nil, nil, "", errors.New("share password required")
+			return nil, nil, "", ErrSharePassword
 		}
 	}
 	data := map[string]any{"permission": permission}
@@ -245,7 +271,7 @@ func (a *App) handleResolveShare(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "share_error"
-		if strings.Contains(err.Error(), "password") {
+		if errors.Is(err, ErrSharePassword) {
 			status = http.StatusUnauthorized
 			code = "share_password_required"
 		}
@@ -269,7 +295,7 @@ func (a *App) handleDownloadShare(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		code := "share_error"
-		if strings.Contains(err.Error(), "password") {
+		if errors.Is(err, ErrSharePassword) {
 			status = http.StatusUnauthorized
 			code = "share_password_required"
 		}
@@ -281,20 +307,26 @@ func (a *App) handleDownloadShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Atomic enforcement: increment only if expiry/limit still permit it.
-	// Wins the race against concurrent downloads at the last unit of capacity.
+	// Atomic enforcement: increment only if expiry/limit still permit it
+	// AND the single-view gate hasn't already fired. The single_view branch
+	// adds `AND viewed_at IS NULL` so a second concurrent downloader's
+	// UPDATE doesn't match — they see 410 Gone. The first downloader wins
+	// because the SET stamps viewed_at = NOW() atomically with the count
+	// bump.
 	res, err := a.DB.ExecContext(r.Context(), `
 		UPDATE shares
-		SET download_count = download_count + 1
+		SET download_count = download_count + 1,
+		    viewed_at = CASE WHEN single_view = 1 THEN NOW() ELSE viewed_at END
 		WHERE token = ?
 		  AND (expires_at IS NULL OR expires_at > NOW())
-		  AND (download_limit IS NULL OR download_count < download_limit)`, token)
+		  AND (download_limit IS NULL OR download_count < download_limit)
+		  AND (single_view = 0 OR viewed_at IS NULL)`, token)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		httpapi.Error(w, http.StatusGone, "share_gone", "Share has expired or reached its download limit")
+		httpapi.Error(w, http.StatusGone, "share_gone", "Share has expired, hit its download limit, or was a one-time view that already fired")
 		return
 	}
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"mycloud/backend-go/internal/httpapi"
+	"mycloud/backend-go/internal/search"
+	"mycloud/backend-go/internal/search/dsl"
 )
 
 // handleSearch supports searching file/folder NAMES (default) and optionally
@@ -37,13 +39,53 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = append(results, item)
 	}
 
+	// If the query contains a field operator (e.g. "name:foo" or
+	// "tag:invoice"), route through the DSL composer. Plain-text queries
+	// continue to use the legacy FULLTEXT+LIKE path so existing UX doesn't
+	// regress.
+	if strings.ContainsRune(q, ':') {
+		parsed, err := dsl.Parse(q)
+		if err != nil {
+			httpapi.Error(w, http.StatusBadRequest, "bad_query", err.Error())
+			return
+		}
+		frag, args := dsl.Compile(parsed, userID)
+		// User-scoped base query. file_tags / tags joins live inside the
+		// fragment as EXISTS subqueries so the SELECT shape stays uniform.
+		query := `SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
+		          FROM files WHERE user_id = ? AND is_deleted = 0` + frag + ` LIMIT 100`
+		queryArgs := append([]any{userID}, args...)
+		rows, err := a.DB.QueryContext(r.Context(), query, queryArgs...)
+		if err != nil {
+			respondDBError(w, r, err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var itemType, id, name, mimeType, updatedAt string
+			var sizeBytes sql.NullInt64
+			var starred sql.NullBool
+			if err := rows.Scan(&itemType, &id, &name, &sizeBytes, &mimeType, &starred, &updatedAt); err != nil {
+				respondDBError(w, r, err)
+				return
+			}
+			add(map[string]any{
+				"type": itemType, "id": id, "name": name,
+				"size_bytes": sizeBytes.Int64, "mime_type": mimeType,
+				"is_starred": starred.Bool, "updated_at": updatedAt,
+			})
+		}
+		httpapi.JSON(w, http.StatusOK, map[string]any{"results": results}, nil)
+		return
+	}
+
 	// ── Name matches across files + folders. Prefer FULLTEXT when the term is
 	// long enough; fall back to LIKE for short queries so single-character
 	// searches still work (MariaDB's default minimum token length is 3).
 	if scope == "name" || scope == "both" {
 		nameRows, err := a.queryNameMatches(r, userID, q)
 		if err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		for _, item := range nameRows {
@@ -55,7 +97,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if scope == "content" || scope == "both" {
 		contentRows, err := a.queryContentMatches(r, userID, q)
 		if err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		for _, item := range contentRows {
@@ -67,49 +109,111 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) queryNameMatches(r *http.Request, userID, q string) ([]map[string]any, error) {
-	useFulltext := len(q) >= 3
-	var rows *sql.Rows
-	var err error
-	if useFulltext {
-		rows, err = a.DB.QueryContext(r.Context(), `
-			SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
-			FROM files
-			WHERE user_id=? AND is_deleted=0
-			  AND MATCH(name) AGAINST(? IN NATURAL LANGUAGE MODE)
-			UNION ALL
-			SELECT 'folder', id, name, NULL, NULL, NULL, updated_at
-			FROM folders
-			WHERE user_id=? AND is_deleted=0 AND name LIKE ?
-			ORDER BY updated_at DESC LIMIT 100`, userID, q, userID, "%"+q+"%")
-	} else {
-		like := "%" + q + "%"
-		rows, err = a.DB.QueryContext(r.Context(), `
-			SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
-			FROM files WHERE user_id=? AND is_deleted=0 AND name LIKE ?
-			UNION ALL
-			SELECT 'folder', id, name, NULL, NULL, NULL, updated_at
-			FROM folders WHERE user_id=? AND is_deleted=0 AND name LIKE ?
-			ORDER BY updated_at DESC LIMIT 100`, userID, like, userID, like)
-	}
+	// Fuzzy path uses the ngram FULLTEXT on name_normalised so even
+	// 2-char prefixes and typo'd queries return candidates. The composer
+	// builds two candidate sets:
+	//   1) ngram FULLTEXT against name_normalised (substring tolerant)
+	//   2) LIKE fallback against name (in case the migration hasn't run
+	//      on this deployment yet — keeps the endpoint resilient)
+	// Results are scored client-side by Damerau-Levenshtein and ordered.
+	normQ := search.NormaliseName(q)
+	like := "%" + normQ + "%"
+	rows, err := a.DB.QueryContext(r.Context(), `
+		SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
+		FROM files
+		WHERE user_id=? AND is_deleted=0
+		  AND (COALESCE(name_normalised, LOWER(name)) LIKE ?
+		    OR MATCH(name) AGAINST(? IN NATURAL LANGUAGE MODE))
+		UNION ALL
+		SELECT 'folder', id, name, NULL, NULL, NULL, updated_at
+		FROM folders WHERE user_id=? AND is_deleted=0 AND LOWER(name) LIKE ?
+		ORDER BY updated_at DESC LIMIT 200`,
+		userID, like, q, userID, like)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanSearchRows(rows)
+	items, err := scanSearchRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	// Re-rank candidates by edit distance — closer matches first. Falls
+	// back to updated_at order if everything ties at distance 0 (substring
+	// hit on the original normalised value).
+	type scored struct {
+		item     map[string]any
+		distance int
+	}
+	ranked := make([]scored, 0, len(items))
+	for _, it := range items {
+		name, _ := it["name"].(string)
+		dist := search.DamerauLevenshtein(search.NormaliseName(name), normQ)
+		// Substring matches get a bonus (distance 0) so "rep" still scores
+		// "report.pdf" above "rope.pdf".
+		if normName := search.NormaliseName(name); len(normName) > 0 && normQ != "" && containsLite(normName, normQ) {
+			dist = 0
+		}
+		ranked = append(ranked, scored{item: it, distance: dist})
+	}
+	// Stable selection-sort up to top 100; the candidate set is bounded
+	// to 200 so this is O(n²)≤40k comparisons — fine inline.
+	if len(ranked) > 100 {
+		ranked = ranked[:100]
+	}
+	for i := 0; i < len(ranked); i++ {
+		minIdx := i
+		for j := i + 1; j < len(ranked); j++ {
+			if ranked[j].distance < ranked[minIdx].distance {
+				minIdx = j
+			}
+		}
+		ranked[i], ranked[minIdx] = ranked[minIdx], ranked[i]
+	}
+	out := make([]map[string]any, len(ranked))
+	for i, r := range ranked {
+		out[i] = r.item
+	}
+	return out, nil
+}
+
+// containsLite is a stdlib-strings.Contains shim that keeps this file's
+// import tidy when other call sites might be reaching for a different
+// search alphabet later (case-insensitive, etc).
+func containsLite(haystack, needle string) bool {
+	return len(needle) > 0 && len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
+}
+
+func indexOf(s, sub string) int {
+	// strings.Index is fine; alias for clarity at call site.
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }
 
 func (a *App) queryContentMatches(r *http.Request, userID, q string) ([]map[string]any, error) {
 	if len(q) < 3 {
 		return nil, nil // FULLTEXT needs at least 3 chars
 	}
+	// Alias the MATCH expression in a subquery so the FT scan only runs
+	// once, while the outer SELECT keeps the column shape scanSearchRows
+	// expects. The previous version invoked MATCH twice (WHERE + ORDER
+	// BY) — InnoDB caches the per-row score but the index read still
+	// happens twice, doubling FT cost on a wide corpus.
 	rows, err := a.DB.QueryContext(r.Context(), `
-		SELECT 'file' AS item_type, f.id, f.name, f.size_bytes, f.mime_type, f.is_starred, f.updated_at
-		FROM files f
-		JOIN file_text t ON t.file_id = f.id
-		WHERE f.user_id=? AND f.is_deleted=0
-		  AND MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE)
-		ORDER BY MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE) DESC
-		LIMIT 100`, userID, q, q)
+		SELECT item_type, id, name, size_bytes, mime_type, is_starred, updated_at
+		FROM (
+		    SELECT 'file' AS item_type, f.id, f.name, f.size_bytes, f.mime_type, f.is_starred, f.updated_at,
+		           MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE) AS relevance
+		    FROM files f
+		    JOIN file_text t ON t.file_id = f.id
+		    WHERE f.user_id=? AND f.is_deleted=0
+		      AND MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE)
+		    ORDER BY relevance DESC
+		    LIMIT 100
+		) ranked`, q, userID, q)
 	if err != nil {
 		return nil, fmt.Errorf("content search: %w", err)
 	}

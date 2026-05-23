@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import useSWR from "swr";
 import { toast } from "sonner";
-import { UserPlus, Pencil, Trash2, ShieldCheck, ShieldOff } from "lucide-react";
+import { UserPlus, Pencil, Trash2, ShieldCheck, ShieldOff, MoreHorizontal } from "lucide-react";
 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -11,8 +12,17 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
-import { admin as adminApi } from "@/lib/api";
+import { admin as adminApi, auth as authApi } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { formatBytes, formatDate } from "@/lib/format";
 import type { User } from "@/lib/types";
 
@@ -32,8 +42,27 @@ export function UserTable({ users, onMutate }: Props) {
   const [editState, setEditState] = useState<EditState | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newUser, setNewUser] = useState({ username: "", email: "", password: "", role: "user", quota: "10" });
+  // Shares the "me" SWR key with the rest of the app so this is a free
+  // lookup, not a fresh round-trip. Used to suppress disable/delete on the
+  // current admin's own row.
+  const { data: me } = useSWR("me", authApi.me, { shouldRetryOnError: false });
+
+  // Disable & delete are blocked for two reasons: (1) you can't act on
+  // yourself — that would lock you out of the panel mid-action; (2) admins
+  // can't disable/delete each other through this UI, peer-admin role
+  // changes go through the explicit Edit dialog instead.
+  const lockReason = (user: User): string | null => {
+    if (me && user.id === me.id) return "You can't act on your own account";
+    if (user.role === "admin") return "Admin accounts are protected";
+    return null;
+  };
 
   const toggleActive = async (user: User) => {
+    const reason = lockReason(user);
+    if (reason) {
+      toast.error(reason);
+      return;
+    }
     try {
       await adminApi.updateUser(user.id, { is_active: !user.is_active });
       onMutate();
@@ -44,6 +73,11 @@ export function UserTable({ users, onMutate }: Props) {
   };
 
   const deleteUser = async (user: User) => {
+    const reason = lockReason(user);
+    if (reason) {
+      toast.error(reason);
+      return;
+    }
     if (!confirm(`Delete user "${user.username}" and permanently remove all of their files and folders? This cannot be undone.`)) return;
     try {
       await adminApi.deleteUser(user.id);
@@ -89,8 +123,27 @@ export function UserTable({ users, onMutate }: Props) {
     }
   };
 
+  // Truncated cell with tooltip showing the full value.
+  const TruncCell = ({ value, className }: { value: string; className?: string }) => (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            className={cn(
+              "block max-w-full truncate align-middle cursor-default",
+              className,
+            )}
+          >
+            {value}
+          </span>
+        }
+      />
+      <TooltipContent>{value}</TooltipContent>
+    </Tooltip>
+  );
+
   return (
-    <>
+    <TooltipProvider>
       <div className="flex justify-end mb-3">
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <UserPlus className="h-4 w-4 mr-1.5" />
@@ -98,30 +151,55 @@ export function UserTable({ users, onMutate }: Props) {
         </Button>
       </div>
 
-      <div className="border rounded-lg overflow-hidden">
-        <Table>
+      {/*
+        Outer wrapper keeps the rounded border. We intentionally do NOT set
+        overflow-hidden here so the per-row dropdown (which portals out anyway)
+        can never be clipped by the container. The inner <Table> already
+        provides its own overflow-x-auto scroll container with a visible
+        scrollbar on small viewports.
+      */}
+      <div className="border rounded-lg">
+        <Table className="table-fixed w-full min-w-[720px]">
           <TableHeader>
             <TableRow>
-              <TableHead>Username</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead>Role</TableHead>
-              <TableHead>Storage</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Joined</TableHead>
-              <TableHead className="w-24" />
+              <TableHead className="sticky left-0 z-20 bg-background w-[180px] min-w-[140px]">
+                Username
+              </TableHead>
+              <TableHead className="w-[240px] min-w-[180px]">Email</TableHead>
+              <TableHead className="w-[96px]">Role</TableHead>
+              <TableHead className="w-[180px] min-w-[160px]">Storage</TableHead>
+              <TableHead className="w-[100px]">Status</TableHead>
+              <TableHead className="w-[120px]">Joined</TableHead>
+              <TableHead className="w-12 text-right" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {users.map((user) => (
               <TableRow key={user.id}>
-                <TableCell className="font-medium">{user.username}</TableCell>
-                <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
-                <TableCell>
-                  <Badge variant={user.role === "admin" ? "default" : "secondary"}>
-                    {user.role}
-                  </Badge>
+                <TableCell className="font-medium sticky left-0 z-10 bg-background max-w-[180px]">
+                  <TruncCell value={user.username} className="font-medium" />
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
+                <TableCell className="text-muted-foreground text-sm max-w-[240px]">
+                  <TruncCell value={user.email} className="text-muted-foreground text-sm" />
+                </TableCell>
+                <TableCell className="max-w-[96px]">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span className="inline-block max-w-full align-middle">
+                          <Badge
+                            variant={user.role === "admin" ? "default" : "secondary"}
+                            className="max-w-full truncate"
+                          >
+                            <span className="truncate">{user.role}</span>
+                          </Badge>
+                        </span>
+                      }
+                    />
+                    <TooltipContent>{user.role}</TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                   {formatBytes(user.used_bytes)} / {formatBytes(user.quota_bytes)}
                 </TableCell>
                 <TableCell>
@@ -129,24 +207,75 @@ export function UserTable({ users, onMutate }: Props) {
                     {user.is_active ? "Active" : "Disabled"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">{formatDate(user.created_at)}</TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7"
-                      onClick={() => setEditState({ user, newPassword: "", quota: String(user.quota_bytes / 1_073_741_824), role: user.role })}>
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleActive(user)}>
-                      {user.is_active
-                        ? <ShieldOff className="h-3.5 w-3.5" />
-                        : <ShieldCheck className="h-3.5 w-3.5" />
-                      }
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive"
-                      onClick={() => deleteUser(user)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                  {formatDate(user.created_at)}
+                </TableCell>
+                <TableCell className="text-right">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      aria-label={`Actions for ${user.username}`}
+                      className={cn(
+                        "inline-flex h-7 w-7 items-center justify-center rounded-md",
+                        "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      )}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" sideOffset={4} className="min-w-[160px]">
+                      <DropdownMenuItem
+                        onClick={() =>
+                          setEditState({
+                            user,
+                            newPassword: "",
+                            quota: String(user.quota_bytes / 1_073_741_824),
+                            role: user.role,
+                          })
+                        }
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit
+                      </DropdownMenuItem>
+                      {(() => {
+                        const reason = lockReason(user);
+                        // Enabling a disabled non-admin/non-self is fine —
+                        // only the disable + delete directions are guarded.
+                        const disableLocked = user.is_active && !!reason;
+                        const deleteLocked = !!reason;
+                        return (
+                          <>
+                            <DropdownMenuItem
+                              onClick={() => toggleActive(user)}
+                              disabled={disableLocked}
+                              title={disableLocked ? reason ?? undefined : undefined}
+                            >
+                              {user.is_active ? (
+                                <>
+                                  <ShieldOff className="h-3.5 w-3.5" />
+                                  Disable
+                                </>
+                              ) : (
+                                <>
+                                  <ShieldCheck className="h-3.5 w-3.5" />
+                                  Enable
+                                </>
+                              )}
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => deleteUser(user)}
+                              disabled={deleteLocked}
+                              title={deleteLocked ? reason ?? undefined : undefined}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              Delete
+                            </DropdownMenuItem>
+                          </>
+                        );
+                      })()}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </TableCell>
               </TableRow>
             ))}
@@ -241,6 +370,6 @@ export function UserTable({ users, onMutate }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </TooltipProvider>
   );
 }

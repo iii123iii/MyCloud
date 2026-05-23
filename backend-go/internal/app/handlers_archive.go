@@ -5,13 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"path"
 	"strings"
 	"time"
 
 	"mycloud/backend-go/internal/httpapi"
+	"mycloud/backend-go/internal/logging"
 	"mycloud/backend-go/internal/storage"
 )
 
@@ -40,17 +40,17 @@ func (a *App) handleDownloadArchive(w http.ResponseWriter, r *http.Request) {
 				httpapi.Error(w, http.StatusNotFound, "not_found", "File not accessible: "+id)
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
 	for _, id := range payload.FolderIDs {
-		if err := a.canAccessFolder(r.Context(), userID, id, AccessViewer); err != nil {
+		if _, err := a.canAccessFolder(r.Context(), userID, id, AccessViewer); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not accessible: "+id)
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
@@ -67,15 +67,16 @@ func (a *App) handleDownloadArchive(w http.ResponseWriter, r *http.Request) {
 
 	// Walk each top-level file. A per-item failure logs and continues so the
 	// archive completes with whatever could be read.
+	log := logging.FromContext(r.Context()).With("op", "archive")
 	for _, fid := range payload.FileIDs {
 		if err := a.writeFileToZip(r, zw, fid, ""); err != nil {
-			log.Printf("archive: file %s: %v", fid, err)
+			log.Warn("write file to zip", "file_id", fid, "error", err)
 		}
 	}
 
 	for _, dirID := range payload.FolderIDs {
 		if err := a.writeFolderToZip(r, zw, userID, dirID); err != nil {
-			log.Printf("archive: folder %s: %v", dirID, err)
+			log.Warn("write folder to zip", "folder_id", dirID, "error", err)
 		}
 	}
 }
@@ -181,8 +182,33 @@ func (a *App) writeFolderToZip(r *http.Request, zw *zip.Writer, userID, folderID
 }
 
 func joinZip(prefix, name string) string {
-	if prefix == "" {
-		return name
+	// Zip-slip defence: every component is run through sanitizeUploadName so
+	// no "../" can sneak into the entry path even if a row in `files` or
+	// `folders` somehow has a bad name (e.g. pre-sanitization rows from
+	// before this validation existed). Components that fail validation are
+	// replaced with "_" rather than dropping the file from the archive —
+	// we want the user to still get their data, just under a safe name.
+	safeName, ok := sanitizeUploadName(name)
+	if !ok {
+		safeName = "_"
 	}
-	return strings.TrimRight(prefix, "/") + "/" + name
+	if prefix == "" {
+		return safeName
+	}
+	// Each prefix segment is independently sanitized so a folder named
+	// "../" can't fly under the radar via a Join.
+	parts := strings.Split(strings.Trim(prefix, "/"), "/")
+	clean := make([]string, 0, len(parts)+1)
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		s, ok := sanitizeUploadName(p)
+		if !ok {
+			s = "_"
+		}
+		clean = append(clean, s)
+	}
+	clean = append(clean, safeName)
+	return strings.Join(clean, "/")
 }

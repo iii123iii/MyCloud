@@ -17,11 +17,13 @@ import (
 )
 
 func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	limit, offset := readLimitOffset(r, 100, 500)
 	rows, err := a.DB.QueryContext(r.Context(), `
 		SELECT id, username, email, role, quota_bytes, used_bytes, is_active, must_change_password, created_at
-		FROM users ORDER BY created_at DESC`)
+		FROM users ORDER BY created_at DESC
+		LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -31,7 +33,7 @@ func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		var quota, used int64
 		var active, mustChange bool
 		if err := rows.Scan(&id, &username, &email, &role, &quota, &used, &active, &mustChange, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		users = append(users, map[string]any{
@@ -46,7 +48,13 @@ func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 			"created_at":           createdAt,
 		})
 	}
-	httpapi.JSON(w, http.StatusOK, map[string]any{"users": users}, nil)
+	if err := rows.Err(); err != nil {
+		respondDBError(w, r, err)
+		return
+	}
+	httpapi.JSON(w, http.StatusOK,
+		map[string]any{"users": users},
+		map[string]any{"limit": limit, "offset": offset, "has_more": len(users) == limit})
 }
 
 func (a *App) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +103,7 @@ func (a *App) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	actingUserID := userIDFrom(r)
 	var payload map[string]any
 	if err := decodeJSON(r, &payload); err != nil {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -104,14 +113,56 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "validation_error", "Nothing to update")
 		return
 	}
-	var exists int
-	if err := a.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM users WHERE id=?", id).Scan(&exists); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+	// Fetch target's role alongside the existence check so we can enforce
+	// the self / admin guards below in a single round-trip.
+	var targetRole string
+	if err := a.DB.QueryRowContext(r.Context(),
+		"SELECT role FROM users WHERE id=?", id,
+	).Scan(&targetRole); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "User not found")
+		} else {
+			respondDBError(w, r, err)
+		}
 		return
 	}
-	if exists == 0 {
-		httpapi.Error(w, http.StatusNotFound, "not_found", "User not found")
-		return
+	// Guard: nobody can disable themselves (locks the admin out of their
+	// own account), and nobody can disable a fellow admin (one admin
+	// shouldn't be able to take down another's access through this UI —
+	// promotion/demotion via the role field is the explicit channel for
+	// changes like that).
+	if active, ok := payload["is_active"].(bool); ok && !active {
+		if id == actingUserID {
+			httpapi.Error(w, http.StatusBadRequest, "no_self_disable", "You can't disable your own account")
+			return
+		}
+		if targetRole == "admin" {
+			httpapi.Error(w, http.StatusForbidden, "no_admin_disable", "Admin accounts can't be disabled")
+			return
+		}
+	}
+	// Role-change guard: prevent the "demote, then disable" loop that
+	// otherwise defeats no_admin_disable above. Cross-admin demotion is
+	// flat-out forbidden; self-demotion requires another admin to remain.
+	if newRole, ok := payload["role"].(string); ok && newRole != "" && newRole != targetRole {
+		if targetRole == "admin" && newRole != "admin" {
+			if id != actingUserID {
+				httpapi.Error(w, http.StatusForbidden, "no_admin_demote",
+					"You can't demote another admin. The target admin must demote themselves.")
+				return
+			}
+			var adminCount int
+			if err := a.DB.QueryRowContext(r.Context(),
+				"SELECT COUNT(*) FROM users WHERE role='admin' AND is_active=1").Scan(&adminCount); err != nil {
+				respondDBError(w, r, err)
+				return
+			}
+			if adminCount <= 1 {
+				httpapi.Error(w, http.StatusForbidden, "last_admin",
+					"You're the last admin. Promote another user first.")
+				return
+			}
+		}
 	}
 	if password, ok := payload["password"].(string); ok && password != "" {
 		hash, err := auth.HashPassword(password)
@@ -120,7 +171,7 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET password_hash=? WHERE id=?", hash, id); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
@@ -130,19 +181,19 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET role=? WHERE id=?", role, id); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
 	if quota, ok := payload["quota_bytes"].(float64); ok {
 		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET quota_bytes=? WHERE id=?", int64(quota), id); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
 	if active, ok := payload["is_active"].(bool); ok {
 		if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET is_active=? WHERE id=?", active, id); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
@@ -151,12 +202,35 @@ func (a *App) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	actingUserID := userIDFrom(r)
+	// Mirror the disable guards: an admin can't delete themselves (locks
+	// themselves out, leaves their files orphaned) and can't delete another
+	// admin (peer admins should sort permission issues out of band).
+	if id == actingUserID {
+		httpapi.Error(w, http.StatusBadRequest, "no_self_delete", "You can't delete your own account")
+		return
+	}
+	var targetRole string
+	if err := a.DB.QueryRowContext(r.Context(),
+		"SELECT role FROM users WHERE id=?", id,
+	).Scan(&targetRole); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			httpapi.Error(w, http.StatusNotFound, "not_found", "User not found")
+		} else {
+			respondDBError(w, r, err)
+		}
+		return
+	}
+	if targetRole == "admin" {
+		httpapi.Error(w, http.StatusForbidden, "no_admin_delete", "Admin accounts can't be deleted")
+		return
+	}
 	if err := a.deleteUserResources(r.Context(), id); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		httpapi.Error(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(), "DELETE FROM users WHERE id=?", id); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.NoContent(w)
@@ -183,7 +257,7 @@ func (a *App) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN users u ON u.id = al.user_id
 		ORDER BY al.created_at DESC LIMIT ?`, limit)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -193,7 +267,7 @@ func (a *App) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 		var action, createdAt string
 		var username, resourceType, ip sql.NullString
 		if err := rows.Scan(&id, &action, &username, &resourceType, &ip, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{"id": id, "action": action, "created_at": createdAt}
@@ -214,7 +288,7 @@ func (a *App) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.DB.QueryContext(r.Context(), "SELECT key_name, value FROM settings")
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -237,7 +311,7 @@ func (a *App) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := a.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -245,12 +319,12 @@ func (a *App) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(r.Context(), `
 			INSERT INTO settings (key_name, value) VALUES (?, ?)
 			ON DUPLICATE KEY UPDATE value=VALUES(value)`, key, value); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Settings updated"}, nil)

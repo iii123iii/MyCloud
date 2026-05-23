@@ -30,19 +30,32 @@ import (
 
 const thumbMaxEdge = 256
 
+// thumbMaxSourceBytes caps the size of an image we'll attempt to thumbnail.
+// image.Decode loads the full decoded pixel grid into memory — a 500 MB JPEG
+// can decode to several GB of RGBA, OOM'ing the worker. Above the cap we
+// skip thumbnailing entirely; the UI falls back to a generic icon and the
+// user can still preview the original on demand.
+const thumbMaxSourceBytes int64 = 50 * 1024 * 1024 // 50 MB
+
 // processThumb generates a thumbnail for the file at fileID and extracts EXIF
 // metadata. The thumbnail is encrypted with its own per-file key. Called by
 // the q:thumb worker after a successful image upload.
 func (a *App) processThumb(ctx context.Context, fileID string) error {
 	var mimeType, encKey, iv, tag, blobPath, userID string
+	var sizeBytes int64
 	err := a.DB.QueryRowContext(ctx, `
-		SELECT mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path, user_id
+		SELECT mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path, user_id, size_bytes
 		FROM files WHERE id = ? AND is_deleted = 0`, fileID,
-	).Scan(&mimeType, &encKey, &iv, &tag, &blobPath, &userID)
+	).Scan(&mimeType, &encKey, &iv, &tag, &blobPath, &userID, &sizeBytes)
 	if err != nil {
 		return fmt.Errorf("load file %s: %w", fileID, err)
 	}
 	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return nil
+	}
+	if sizeBytes > thumbMaxSourceBytes {
+		// Skip but don't fail — the job is "done" successfully and won't
+		// retry. The user sees the fallback icon instead.
 		return nil
 	}
 
@@ -163,15 +176,39 @@ func (a *App) handleFileThumb(w http.ResponseWriter, r *http.Request) {
 	}
 	var thumbPath sql.NullString
 	var exifJSON sql.NullString
+	var fileSize int64
+	var fileUpdated string
 	if err := a.DB.QueryRowContext(r.Context(), `
-		SELECT f.thumb_path, e.exif_json
+		SELECT f.thumb_path, e.exif_json, f.size_bytes, f.updated_at
 		FROM files f LEFT JOIN file_exif e ON e.file_id = f.id
-		WHERE f.id = ?`, fileID).Scan(&thumbPath, &exifJSON); err != nil {
+		WHERE f.id = ?`, fileID).Scan(&thumbPath, &exifJSON, &fileSize, &fileUpdated); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	if !thumbPath.Valid || !exifJSON.Valid {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// ETag conditional GET — thumbnails are immutable for a given (size,
+	// updated_at) pair because they're regenerated on file content change.
+	// Returning 304 here saves the decrypt+stream cost which dominates the
+	// request latency for cold cache pages.
+	etag := httpapi.For(fileSize, fileUpdated)
+	if httpapi.CheckIfNoneMatch(w, r, etag) {
+		return
+	}
+
+	// Redis cache layer in front of the disk decrypt. Key includes the
+	// ETag so a content change naturally invalidates the cache without an
+	// explicit eviction step. 24h TTL and a 256 KiB size cap keep memory
+	// bounded; larger thumbs (rare — disintegration outputs ~10-30 KiB
+	// JPEGs at 256px) fall through to the disk path.
+	redisKey := "thumb:" + fileID + ":" + etag
+	if cached, err := a.Redis.Get(r.Context(), redisKey).Bytes(); err == nil && len(cached) > 0 {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Header().Set("X-Cache", "redis")
+		_, _ = w.Write(cached)
 		return
 	}
 	var meta struct {
@@ -190,12 +227,73 @@ func (a *App) handleFileThumb(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key", http.StatusInternalServerError)
 		return
 	}
+	// Decrypt into a buffer (capped at 256 KiB) so we can both stream
+	// to the client AND seed the Redis cache. Past the cap, we fall back
+	// to streaming directly (bypassing the cache) so unusually large
+	// thumbnails don't pin Redis memory.
+	const cacheCap = 256 * 1024
+	cacheBuf := &capBuffer{cap: cacheCap}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	if err := storage.DecryptFileToWriter(thumbPath.String, w, key); err != nil {
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.Header().Set("X-Cache", "miss")
+	multi := teeWriter(w, cacheBuf)
+	if err := storage.DecryptFileToWriter(thumbPath.String, multi, key); err != nil {
 		// Already wrote headers — best we can do is truncate the response.
 		return
 	}
+	if cacheBuf.full() {
+		// Source exceeded the cap; skip caching.
+		return
+	}
+	_ = a.Redis.Set(r.Context(), redisKey, cacheBuf.bytes(), 24*time.Hour).Err()
+}
+
+// capBuffer accumulates writes up to cap, then silently drops further
+// content (sets the full flag). Used by the cache to stop hoarding
+// memory on outsize thumbnails.
+type capBuffer struct {
+	cap  int
+	buf  []byte
+	over bool
+}
+
+func (b *capBuffer) Write(p []byte) (int, error) {
+	if b.over {
+		return len(p), nil
+	}
+	remain := b.cap - len(b.buf)
+	if len(p) > remain {
+		b.buf = append(b.buf, p[:remain]...)
+		b.over = true
+		return len(p), nil
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *capBuffer) bytes() []byte { return b.buf }
+func (b *capBuffer) full() bool    { return b.over }
+
+// teeWriter mirrors writes to two destinations without io.MultiWriter (which
+// would import io into this file just for one call site).
+func teeWriter(a, b interface{ Write([]byte) (int, error) }) interface {
+	Write([]byte) (int, error)
+} {
+	return &teeWriterImpl{a: a, b: b}
+}
+
+type teeWriterImpl struct {
+	a, b interface{ Write([]byte) (int, error) }
+}
+
+func (t *teeWriterImpl) Write(p []byte) (int, error) {
+	n, err := t.a.Write(p)
+	if err != nil {
+		return n, err
+	}
+	// Best-effort to the cache buffer; errors don't fail the request.
+	_, _ = t.b.Write(p)
+	return n, nil
 }
 
 // handleListPhotos returns image files for the caller, ordered by taken_at
@@ -220,10 +318,17 @@ func (a *App) handleListPhotos(w http.ResponseWriter, r *http.Request) {
 		query += " AND COALESCE(taken_at, created_at) <= ?"
 		args = append(args, to)
 	}
-	query += " ORDER BY shot_at DESC LIMIT 500"
+	// Hard limit + explicit offset paging replaces the previous silent
+	// LIMIT 500 — that capped the response without telling the client
+	// there was more data, so a user with 10k photos saw 500 with no UI
+	// hint to scroll further. Cap stays sane (1000) to keep the JSON
+	// payload bounded.
+	limit, offset := readLimitOffset(r, 200, 1000)
+	query += " ORDER BY shot_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
 	rows, err := a.DB.QueryContext(r.Context(), query, args...)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -233,7 +338,7 @@ func (a *App) handleListPhotos(w http.ResponseWriter, r *http.Request) {
 		var size sql.NullInt64
 		var width, height sql.NullInt64
 		if err := rows.Scan(&id, &name, &size, &mime, &width, &height, &shotAt, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{
@@ -254,7 +359,13 @@ func (a *App) handleListPhotos(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, item)
 	}
-	httpapi.JSON(w, http.StatusOK, map[string]any{"photos": out}, nil)
+	if err := rows.Err(); err != nil {
+		respondDBError(w, r, err)
+		return
+	}
+	httpapi.JSON(w, http.StatusOK,
+		map[string]any{"photos": out},
+		map[string]any{"limit": limit, "offset": offset, "has_more": len(out) == limit})
 }
 
 var _ = io.Copy // keep stdlib import alive

@@ -53,7 +53,7 @@ func (a *App) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 				httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		if owner != userID {
@@ -69,7 +69,7 @@ func (a *App) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 				httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		if owner != userID {
@@ -88,7 +88,7 @@ func (a *App) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if granteeID == userID {
@@ -103,7 +103,7 @@ func (a *App) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 		ON DUPLICATE KEY UPDATE permission=VALUES(permission)`,
 		id, payload.FileID, payload.FolderID, granteeID, userID, payload.Permission,
 	); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	resourceID := ""
@@ -155,7 +155,7 @@ func (a *App) handleListGrants(w http.ResponseWriter, r *http.Request) {
 		WHERE `+where+`
 		ORDER BY g.created_at DESC`, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -165,7 +165,7 @@ func (a *App) handleListGrants(w http.ResponseWriter, r *http.Request) {
 		var fileID, folderID, fileName, folderName, granteeName, granterName sql.NullString
 		if err := rows.Scan(&id, &fileID, &folderID, &granteeID, &grantedBy, &permission, &createdAt,
 			&fileName, &folderName, &granteeName, &granterName); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		// Hide grants where the target was hard-deleted (LEFT JOIN returned null).
@@ -220,7 +220,7 @@ func (a *App) handleUpdateGrant(w http.ResponseWriter, r *http.Request) {
 		"UPDATE share_grants SET permission=? WHERE id=? AND granted_by=?",
 		payload.Permission, id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -238,7 +238,7 @@ func (a *App) handleDeleteGrant(w http.ResponseWriter, r *http.Request) {
 		"DELETE FROM share_grants WHERE id=? AND (granted_by=? OR grantee_user_id=?)",
 		id, userID, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -50,16 +51,38 @@ func (a *App) markFolderDeleted(ctx context.Context, userID, folderID string) er
 		return err
 	}
 	ph, args := inClause(ids)
-	if _, err := a.DB.ExecContext(ctx,
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf("UPDATE folders SET is_deleted=1, deleted_at=NOW() WHERE id IN %s", ph),
 		args...); err != nil {
 		return err
 	}
+	// Sum sizes of files about to be soft-deleted so we can release that
+	// quota atomically with the trash move. Without this, trashing a folder
+	// preserves its bytes against the user's cap — confusing UX, identical
+	// to the file-level fix in handleDeleteFile.
 	fileArgs := append([]any{userID}, args...)
-	_, err = a.DB.ExecContext(ctx,
-		fmt.Sprintf("UPDATE files SET is_deleted=1, deleted_at=NOW() WHERE user_id=? AND folder_id IN %s", ph),
-		fileArgs...)
-	return err
+	var freed sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE user_id=? AND folder_id IN %s AND is_deleted=0", ph),
+		fileArgs...).Scan(&freed); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("UPDATE files SET is_deleted=1, deleted_at=NOW() WHERE user_id=? AND folder_id IN %s AND is_deleted=0", ph),
+		fileArgs...); err != nil {
+		return err
+	}
+	if freed.Int64 > 0 {
+		if err := releaseQuota(ctx, tx, userID, freed.Int64); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *App) restoreFolder(ctx context.Context, userID, folderID string) error {
@@ -68,16 +91,36 @@ func (a *App) restoreFolder(ctx context.Context, userID, folderID string) error 
 		return err
 	}
 	ph, args := inClause(ids)
-	if _, err := a.DB.ExecContext(ctx,
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Re-debit quota for the soft-deleted files we're restoring. If that
+	// would exceed cap, refuse — caller surfaces as 413.
+	fileArgs := append([]any{userID}, args...)
+	var needed sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE user_id=? AND folder_id IN %s AND is_deleted=1", ph),
+		fileArgs...).Scan(&needed); err != nil {
+		return err
+	}
+	if needed.Int64 > 0 {
+		if err := reserveQuota(ctx, tx, userID, needed.Int64); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf("UPDATE folders SET is_deleted=0, deleted_at=NULL WHERE id IN %s", ph),
 		args...); err != nil {
 		return err
 	}
-	fileArgs := append([]any{userID}, args...)
-	_, err = a.DB.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf("UPDATE files SET is_deleted=0, deleted_at=NULL WHERE user_id=? AND folder_id IN %s", ph),
-		fileArgs...)
-	return err
+		fileArgs...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) permanentlyDeleteFile(ctx context.Context, userID, fileID string) error {
@@ -256,25 +299,72 @@ func (a *App) permanentlyDeleteFolder(ctx context.Context, userID, folderID stri
 }
 
 func (a *App) deleteUserResources(ctx context.Context, userID string) error {
-	rows, err := a.DB.QueryContext(ctx, "SELECT storage_path FROM files WHERE user_id=?", userID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			return err
-		}
-		paths = append(paths, path)
-	}
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM shares WHERE created_by=?", userID); err != nil && err != sql.ErrNoRows {
+
+	// Lock the user's file rows inside the tx and gather paths + version
+	// paths. Reading outside the transaction created a TOCTOU window where
+	// a concurrent upload's row would be wiped by DELETE WHERE user_id=?
+	// but its on-disk blob never reached this slice — leaving an orphan.
+	// SELECT ... FOR UPDATE serialises against new inserts holding the
+	// row lock; the outer DELETE then runs against the same snapshot.
+	fileRows, err := tx.QueryContext(ctx,
+		"SELECT id, storage_path FROM files WHERE user_id=? FOR UPDATE", userID)
+	if err != nil {
+		return err
+	}
+	type fileRow struct{ id, path string }
+	var files []fileRow
+	for fileRows.Next() {
+		var f fileRow
+		if err := fileRows.Scan(&f.id, &f.path); err != nil {
+			fileRows.Close()
+			return err
+		}
+		files = append(files, f)
+	}
+	if err := fileRows.Err(); err != nil {
+		fileRows.Close()
+		return err
+	}
+	fileRows.Close()
+
+	// Version paths for those files — same locking concern.
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.path)
+	}
+	if len(files) > 0 {
+		ids := make([]string, 0, len(files))
+		for _, f := range files {
+			ids = append(ids, f.id)
+		}
+		ph, args := inClause(ids)
+		verRows, err := tx.QueryContext(ctx,
+			fmt.Sprintf("SELECT storage_path FROM file_versions WHERE file_id IN %s FOR UPDATE", ph),
+			args...)
+		if err != nil {
+			return err
+		}
+		for verRows.Next() {
+			var p string
+			if err := verRows.Scan(&p); err != nil {
+				verRows.Close()
+				return err
+			}
+			paths = append(paths, p)
+		}
+		if err := verRows.Err(); err != nil {
+			verRows.Close()
+			return err
+		}
+		verRows.Close()
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM shares WHERE created_by=?", userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE user_id=?", userID); err != nil {
@@ -286,11 +376,29 @@ func (a *App) deleteUserResources(ctx context.Context, userID string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM activity_log WHERE user_id=?", userID); err != nil {
 		return err
 	}
+
+	// Route every blob path through releaseBlobRef so a dedup-shared blob
+	// (referenced by ANOTHER user) survives this user's deletion. The
+	// previous version unconditionally `os.Remove`'d every path under the
+	// assumption that paths were per-user — true for non-dedup blobs, but
+	// wrong as soon as cross-user dedup is in play, and silently destroyed
+	// the other user's still-referenced blob.
+	deleteAfter := []string{}
+	for _, p := range paths {
+		gone, err := releaseBlobRef(ctx, tx, p)
+		if err != nil {
+			return err
+		}
+		if gone {
+			deleteAfter = append(deleteAfter, p)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	for _, path := range paths {
-		_ = os.Remove(path)
+	for _, p := range deleteAfter {
+		_ = os.Remove(p)
 	}
 	return nil
 }

@@ -6,6 +6,13 @@ import { AlertCircle, Loader2, Save, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { files as filesApi, tokenStore } from "@/lib/api";
 import { getEditMode } from "@/lib/file-kind";
 import type { FileItem } from "@/lib/types";
@@ -137,37 +144,55 @@ export function EditFileDialog({ open, onOpenChange, file, onSaved }: Props) {
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent
         showCloseButton={false}
-        className="!fixed !inset-0 !top-0 !left-0 !translate-x-0 !translate-y-0 !w-screen !h-screen !max-w-none !max-h-none !rounded-none flex flex-col p-0 gap-0"
+        className="!fixed !inset-0 !top-0 !left-0 !translate-x-0 !translate-y-0 !w-screen !h-screen !max-w-none !max-h-none !rounded-none flex flex-col p-0 gap-0 overflow-hidden"
       >
         {/* Header strip — same layout as PreviewModal so the editor feels like
-            "preview, but writable". */}
-        <div className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0 bg-background">
-          <div className="flex items-center gap-3 min-w-0">
-            <span className="text-base font-medium truncate">{file.name}</span>
+            "preview, but writable". Pinned to the top via shrink-0 so very
+            large files can't push it off-screen. */}
+        <div className="sticky top-0 z-10 flex flex-row items-center justify-between gap-2 px-3 sm:px-4 py-3 border-b shrink-0 bg-background max-w-full overflow-hidden">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            <TooltipProvider delay={300}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="text-sm sm:text-base font-medium truncate min-w-0 max-w-full cursor-default">
+                      {file.name}
+                    </span>
+                  }
+                />
+                <TooltipContent
+                  side="bottom"
+                  className="max-w-[min(90vw,32rem)] break-all whitespace-normal"
+                >
+                  {file.name}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             {dirty && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">
+              <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0 whitespace-nowrap">
                 · Unsaved
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             <Button
               variant="default"
               size="sm"
               onClick={handleSave}
               disabled={saving || loading || !!loadError}
+              className="shrink-0"
             >
               {saving ? (
-                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                <Loader2 className="h-4 w-4 sm:mr-1.5 animate-spin" />
               ) : (
-                <Save className="h-4 w-4 mr-1.5" />
+                <Save className="h-4 w-4 sm:mr-1.5" />
               )}
-              Save
+              <span className="hidden sm:inline">Save</span>
             </Button>
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-8 w-8 shrink-0"
               onClick={() => handleClose(false)}
               aria-label="Close"
             >
@@ -176,8 +201,16 @@ export function EditFileDialog({ open, onOpenChange, file, onSaved }: Props) {
           </div>
         </div>
 
-        {/* Body */}
-        <div className="relative flex-1 min-h-0 bg-muted/20">
+        {/* Body — scrolls internally so the header (and any editor footer
+            controls) stay pinned. min-h-0 lets the flex child actually shrink
+            inside the column; max-h-[80vh] caps how tall the inner editor can
+            grow before its own content starts scrolling. */}
+        <div
+          className={cn(
+            "relative flex-1 min-h-0 bg-muted/20",
+            "max-h-[80vh] overflow-y-auto overflow-x-auto",
+          )}
+        >
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center text-muted-foreground gap-2">
               <Loader2 className="h-5 w-5 animate-spin" />
@@ -188,7 +221,9 @@ export function EditFileDialog({ open, onOpenChange, file, onSaved }: Props) {
           {!loading && loadError && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6 gap-3">
               <AlertCircle className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground max-w-sm">{loadError}</p>
+              <p className="text-sm text-muted-foreground max-w-sm break-words">
+                {loadError}
+              </p>
             </div>
           )}
 

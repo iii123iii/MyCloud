@@ -1,0 +1,18 @@
+▲ Next.js 16.2.2 (Turbopack)
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 27.3s
+  Running TypeScript ...
+Failed to type check.
+
+./components/lightbox/Lightbox.tsx:197:9
+Type error: Type 'Touch' is missing the following properties from type 'Touch': force, radiusX, radiusY, rotationAngle
+
+  [90m195 |[0m       [36mconst[0m t = e.changedTouches[i];
+  [90m196 |[0m       [36mif[0m (t.identifier === start.id) {
+[31m[1m>[0m [90m197 |[0m         end = t;
+  [90m    |[0m         [31m[1m^[0m
+  [90m198 |[0m         [36mbreak[0m;
+  [90m199 |[0m       }
+  [90m200 |[0m     }
+Next.js build worker exited with code: 1 and signal: null

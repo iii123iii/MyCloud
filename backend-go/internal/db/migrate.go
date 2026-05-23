@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -67,7 +67,7 @@ func Migrate(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
 		}
-		log.Printf("migrations: applying %s", name)
+		slog.Info("migrations: applying", "file", name, "version", version)
 		if err := execStatements(db, string(body)); err != nil {
 			return fmt.Errorf("apply %s: %w", name, err)
 		}

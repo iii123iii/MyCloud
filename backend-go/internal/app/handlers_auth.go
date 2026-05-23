@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"mycloud/backend-go/internal/auth"
 	"mycloud/backend-go/internal/httpapi"
@@ -22,10 +23,32 @@ type refreshPayload struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// dummyPasswordHash is a precomputed bcrypt hash used to absorb the
+// compare time when the supplied identity doesn't exist. Without it,
+// handleLogin returns instantly on user-not-found and only spends the
+// ~250ms bcrypt cost when a real user row is found — an obvious user-
+// enumeration oracle. We init this lazily on first use because BcryptCost
+// is set at package level and we'd rather pay the cost once at first
+// login than at every process start.
+var dummyPasswordHash []byte
+
+func ensureDummyHash() {
+	if len(dummyPasswordHash) > 0 {
+		return
+	}
+	h, err := auth.HashPassword("dummy-password-never-matches-real-input")
+	if err != nil {
+		// If hashing fails the system is unusable anyway — leave the
+		// dummy empty and accept a small enumeration window.
+		return
+	}
+	dummyPasswordHash = []byte(h)
+}
+
 func (a *App) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	value, err := getSetting(r.Context(), a.DB, "setup_complete", "false")
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.JSON(w, http.StatusOK, map[string]any{"setup_complete": boolSetting(value)}, nil)
@@ -59,7 +82,7 @@ func (a *App) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -75,11 +98,11 @@ func (a *App) handleSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO settings (key_name, value) VALUES ('setup_complete', 'true')
 		ON DUPLICATE KEY UPDATE value='true'`); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(ctx, a.DB, &id, "user.setup_complete", "user", id, clientIP(r), map[string]any{"email": payload.Email})
@@ -97,7 +120,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	setupComplete, err := getSetting(r.Context(), a.DB, "setup_complete", "false")
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if !boolSetting(setupComplete) {
@@ -106,7 +129,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	regEnabled, err := getSetting(r.Context(), a.DB, "registration_enabled", "true")
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if !boolSetting(regEnabled) {
@@ -140,6 +163,8 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tokens["username"] = payload.Username
 	tokens["email"] = payload.Email
 	tokens["must_change_password"] = false
+	// Persist the access-token JTI so /me/sessions can list this device.
+	a.recordSessionFromTokens(r, id, tokens)
 	writeActivity(r.Context(), a.DB, &id, "user.register", "user", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusCreated, tokens, nil)
 }
@@ -157,16 +182,28 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		quotaBytes, usedBytes                   int64
 		isActive, mustChange                    bool
 	)
+	// Usernames are stored lowercased at register-time, so an equality match
+	// on the indexed column hits the uq_users_username unique index. The
+	// previous `LOWER(username)=?` predicate was unsargable and forced a
+	// full table scan on every login attempt, which compounds badly when
+	// rate-limiting only kicks in after several attempts.
 	err := a.DB.QueryRowContext(r.Context(), `
 		SELECT id, username, email, password_hash, role, quota_bytes, used_bytes, is_active, must_change_password
-		FROM users WHERE email=? OR LOWER(username)=?`, payload.Email, payload.Email).
+		FROM users WHERE email=? OR username=?`, payload.Email, payload.Email).
 		Scan(&id, &username, &email, &passwordHash, &role, &quotaBytes, &usedBytes, &isActive, &mustChange)
 	if errors.Is(err, sql.ErrNoRows) {
+		// Mitigate user-enumeration by spending the same bcrypt budget we
+		// would for a real user. Without this, response time leaks
+		// existence (~10ms vs ~250ms).
+		ensureDummyHash()
+		if len(dummyPasswordHash) > 0 {
+			_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(payload.Password))
+		}
 		httpapi.Error(w, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password")
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if !isActive || auth.ComparePassword(passwordHash, payload.Password) != nil {
@@ -187,6 +224,8 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	tokens["username"] = username
 	tokens["email"] = email
 	tokens["must_change_password"] = mustChange
+	// Persist the access-token JTI so /me/sessions can list this device.
+	a.recordSessionFromTokens(r, id, tokens)
 	writeActivity(r.Context(), a.DB, &id, "user.login", "user", id, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, tokens, nil)
 }
@@ -197,36 +236,76 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
 		return
 	}
+	// Reuse-detection: if this exact JTI is already on the blacklist, an
+	// attacker is replaying a refresh token we already rotated. The
+	// legitimate device's next refresh will also fail and force a re-login —
+	// but that's the correct response: we don't know which holder is the
+	// thief, so both lose the session and the user must authenticate fresh.
+	// We do this BEFORE Parse so even an already-revoked token is treated
+	// as reuse (Parse would otherwise refuse and we'd never reach the
+	// family-revocation branch).
+	preClaims, _ := a.Auth.ParseUnverifiedForReuse(payload.RefreshToken)
+	if preClaims != nil && preClaims.ID != "" && a.Auth.IsJTIRevoked(preClaims.ID) {
+		if preClaims.Family != "" {
+			a.Auth.RevokeFamily(preClaims.Family)
+		}
+		httpapi.Error(w, http.StatusUnauthorized, "refresh_reuse",
+			"Refresh token has already been used. Please sign in again.")
+		return
+	}
 	claims, err := a.Auth.Parse(payload.RefreshToken)
 	if err != nil || claims.Type != "refresh" {
 		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Invalid refresh token")
 		return
 	}
-	role, active, err := getUserSession(r.Context(), a.DB, claims.UserID)
+	role, active, err := getUserSession(r.Context(), a.Stmts, claims.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "User not found")
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if !active {
 		httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Account is disabled")
 		return
 	}
-	tokens, err := a.Auth.IssuePair(claims.UserID, role)
+	// Rotate: blacklist the presented refresh JTI before issuing the new
+	// pair. The new pair inherits the family so the chain stays linked for
+	// reuse-detection — but this specific JTI is now single-use.
+	a.Auth.RevokeJTI(claims.ID)
+	tokens, err := a.Auth.IssuePairForRefresh(claims.UserID, role, claims.Family)
 	if err != nil {
 		httpapi.Error(w, http.StatusInternalServerError, "token_error", err.Error())
 		return
 	}
+	// Refresh issues a new JTI; record it. The OLD session row keeps
+	// its expiry for revocation visibility; the new one represents this
+	// device's current access token.
+	a.recordSessionFromTokens(r, claims.UserID, tokens)
 	httpapi.JSON(w, http.StatusOK, tokens, nil)
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	var payload refreshPayload
 	_ = decodeJSON(r, &payload)
+	// Best-effort revoke the supplied refresh token (clients may call logout
+	// without a refresh payload from token-expired states — that's fine).
+	// We also revoke the bearer access token if present so the in-flight
+	// access JTI dies immediately, not only on its next ~15min expiry.
 	a.Auth.Revoke(payload.RefreshToken)
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		bearer := strings.TrimPrefix(authHeader, "Bearer ")
+		a.Auth.Revoke(bearer)
+		// If we can read the family from the bearer, kill the whole session
+		// family — that includes any refresh tokens we didn't see in this
+		// call. Logout should be a clean break.
+		if claims, _ := a.Auth.ParseUnverifiedForReuse(bearer); claims != nil && claims.Family != "" {
+			a.Auth.RevokeFamily(claims.Family)
+		}
+	}
 	httpapi.JSON(w, http.StatusOK, map[string]any{"message": "Logged out"}, nil)
 }
 
@@ -252,7 +331,7 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.JSON(w, http.StatusOK, map[string]any{
@@ -297,7 +376,7 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(), "UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?", hash, userID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "user.change_password", "user", userID, clientIP(r), nil)
@@ -327,7 +406,7 @@ func (a *App) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(), "DELETE FROM users WHERE id=?", userID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.NoContent(w)

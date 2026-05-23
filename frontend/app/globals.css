@@ -46,6 +46,9 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  --animate-fade-in: fade-in 0.25s ease-out both;
+  --animate-slide-up: slide-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-scale-in: scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 :root {
@@ -84,19 +87,20 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  /* Slight blue-gray tint instead of pure black for less harsh contrast */
+  --background: oklch(0.16 0.005 270);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.21 0.006 270);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.21 0.006 270);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --secondary: oklch(0.275 0.005 270);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
+  --muted: oklch(0.275 0.005 270);
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --accent: oklch(0.275 0.005 270);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
@@ -107,11 +111,11 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
+  --sidebar: oklch(0.21 0.006 270);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.275 0.005 270);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
@@ -123,30 +127,182 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1;
+    line-height: 1.55;
   }
   html {
     @apply font-sans;
     scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    /* Firefox: thin native scrollbar tinted with foreground */
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 25%, transparent) transparent;
   }
 
-  /* Thin custom scrollbar */
+  /* Typography defaults --- headings get tighter leading + letter-spacing */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  h1 {
+    letter-spacing: -0.03em;
+    font-weight: 700;
+  }
+  p, li {
+    text-wrap: pretty;
+  }
+
+  /* Selection color tied to primary token */
+  ::selection {
+    background-color: color-mix(in oklch, var(--primary) 35%, transparent);
+    color: var(--foreground);
+  }
+  ::-moz-selection {
+    background-color: color-mix(in oklch, var(--primary) 35%, transparent);
+    color: var(--foreground);
+  }
+
+  /* Thin custom scrollbar (WebKit) */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.7 0 0 / 30%);
-    border-radius: 3px;
+    background: color-mix(in oklch, var(--foreground) 18%, transparent);
+    border-radius: var(--radius-sm);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    transition: background-color 0.2s ease;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.5 0 0 / 50%);
+    background: color-mix(in oklch, var(--foreground) 38%, transparent);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:active {
+    background: color-mix(in oklch, var(--foreground) 55%, transparent);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Focus visibility --- primary-tinted ring everywhere keyboard focuses */
+  :focus-visible {
+    outline: 2px solid color-mix(in oklch, var(--primary) 70%, transparent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+    transition: outline-color 0.15s ease, outline-offset 0.15s ease;
+  }
+  /* Don't double-up rings on shadcn controls that paint their own */
+  [data-slot]:focus-visible,
+  button:focus:not(:focus-visible),
+  a:focus:not(:focus-visible),
+  input:focus:not(:focus-visible),
+  textarea:focus:not(:focus-visible),
+  select:focus:not(:focus-visible) {
+    outline: none;
   }
 
   /* Smooth transitions for interactive elements */
   button, a, [role="button"] {
-    transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   }
+
+  /* Image / media reset for nicer defaults */
+  img, svg, video, canvas, audio, iframe, embed, object {
+    display: block;
+    max-width: 100%;
+  }
+}
+
+/* Utility keyframes --- exposed as Tailwind `animate-*` via @theme above */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Honor user reduce-motion preference everywhere */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   App polish — drag-feedback affordances.
+   The previously-duplicated ::selection and scrollbar blocks have been
+   consolidated into @layer base above so the cascade has a single source
+   of truth instead of two stanzas silently overriding each other.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Visual feedback when the user is dragging files over the window. The
+   FileExplorer's dropzone toggles `data-dragging="true"` on <body>; we
+   paint a subtle ring + tint so it's obvious the drop will be accepted. */
+body[data-dragging="true"]::after {
+  content: "";
+  position: fixed;
+  inset: 12px;
+  border: 2px dashed color-mix(in oklch, var(--primary) 60%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--primary) 6%, transparent);
+  pointer-events: none;
+  z-index: 9998;
+  animation: fade-in 0.15s ease-out;
+}
+
+/* Tabular numerals for size/count columns so digits line up across rows
+   without forcing a monospace font on the whole layout. */
+.tabular-nums-everywhere [data-numeric],
+[data-numeric] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Smoother image rendering for thumbnails — Chrome's default is jagged
+   on scaled-down images. */
+img.thumb {
+  image-rendering: -webkit-optimize-contrast;
 }

@@ -53,7 +53,7 @@ func (a *App) mountTus(basePath string) (http.Handler, error) {
 			}
 			folderID := hook.Upload.MetaData["folder_id"]
 			if folderID != "" {
-				if err := a.canAccessFolder(hook.Context, userID, folderID, AccessEditor); err != nil {
+				if _, err := a.canAccessFolder(hook.Context, userID, folderID, AccessEditor); err != nil {
 					return tusd.HTTPResponse{StatusCode: http.StatusForbidden}, tusd.FileInfoChanges{},
 						fmt.Errorf("folder not accessible")
 				}
@@ -112,17 +112,33 @@ func (a *App) mountTus(basePath string) (http.Handler, error) {
 			}
 			contentHash := hex.EncodeToString(hasher.Sum(nil))
 
-			if _, err := storage.EnsureUserDir(a.Config.StoragePath, userID); err != nil {
+			// Resolve attribution: uploading into a shared folder (editor access)
+			// stores the file under the folder OWNER. Re-checks access here so a
+			// grant revoked between create and finish is honoured.
+			ownerID, err := a.resolveUploadOwner(hook.Context, userID, folderID)
+			if err != nil {
+				_ = os.Remove(tmpPath)
+				code := http.StatusInternalServerError
+				if errors.Is(err, ErrFolderNotFound) {
+					code = http.StatusNotFound
+				}
+				return tusd.HTTPResponse{StatusCode: code}, err
+			}
+
+			if _, err := storage.EnsureUserDir(a.Config.StoragePath, ownerID); err != nil {
 				_ = os.Remove(tmpPath)
 				return tusd.HTTPResponse{}, err
 			}
 
-			commit, err := a.commitUploadWithVersioning(hook.Context, userID, filename, folderID, mimeType, contentHash, size, bundle, tmpPath)
+			commit, err := a.commitUploadWithVersioning(hook.Context, userID, ownerID, filename, folderID, mimeType, contentHash, size, bundle, tmpPath)
 			if err != nil {
 				_ = os.Remove(tmpPath)
 				code := http.StatusInternalServerError
-				if errors.Is(err, ErrQuotaExceeded) {
+				switch {
+				case errors.Is(err, ErrQuotaExceeded):
 					code = http.StatusRequestEntityTooLarge
+				case errors.Is(err, ErrInvalidFilename):
+					code = http.StatusBadRequest
 				}
 				return tusd.HTTPResponse{StatusCode: code}, err
 			}

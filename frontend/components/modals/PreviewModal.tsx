@@ -4,8 +4,12 @@ import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Loader2, MessageSquare, Pencil, RotateCcw, X } from "lucide-react";
 import { CommentsPanel } from "./CommentsPanel";
+import { VideoPlayer } from "@/components/viewers/VideoPlayer";
 import { files as filesApi, versions as versionsApi, tokenStore } from "@/lib/api";
 import {
   isPreviewable,
@@ -77,6 +81,35 @@ function getPreviewSizeLimitMessage(file: FileItem): string | null {
     return `This file is too large for inline preview (${formatBytes(size)}). Download it instead.`;
   }
   return null;
+}
+
+/** Trim a mime to a short, badge-friendly label. */
+function shortMime(mime: string): string {
+  if (!mime) return "file";
+  // application/vnd.openxmlformats-officedocument.spreadsheetml.sheet → xlsx
+  const known: Record<string, string> = {
+    "application/pdf": "PDF",
+    "application/json": "JSON",
+    "application/xml": "XML",
+    "application/zip": "ZIP",
+    "application/msword": "DOC",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+    "application/vnd.ms-excel": "XLS",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+    "application/vnd.oasis.opendocument.spreadsheet": "ODS",
+    "text/csv": "CSV",
+    "text/plain": "TXT",
+  };
+  if (known[mime]) return known[mime];
+  const slash = mime.indexOf("/");
+  if (slash === -1) return mime.toUpperCase();
+  const left  = mime.slice(0, slash);
+  const right = mime.slice(slash + 1);
+  // image/png → PNG, audio/mpeg → MP3-ish (just uppercase the subtype)
+  if (left === "image" || left === "audio" || left === "video") {
+    return right.replace(/^x-/, "").toUpperCase();
+  }
+  return right.replace(/^x-/, "").toUpperCase();
 }
 
 /** Parse CSV text into a 2D array, handling double-quoted fields. */
@@ -390,24 +423,74 @@ export function PreviewModal({
     }
   };
 
+  // Content is "ready" (we have something to render) — used to fade the body in.
+  const contentReady =
+    !loading && (
+      blobUrl !== null ||
+      textContent !== null ||
+      highlightedHtml !== null ||
+      csvData !== null ||
+      spreadsheetData !== null ||
+      docHtml !== null ||
+      docError !== null ||
+      fetchError !== null ||
+      previewNotice !== null ||
+      !isPreviewable(mime)
+    );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="!fixed !inset-0 !top-0 !left-0 !translate-x-0 !translate-y-0 !w-screen !h-screen !max-w-none !max-h-none !rounded-none flex flex-col p-0 gap-0"
+        className="!fixed !inset-0 !top-0 !left-0 !translate-x-0 !translate-y-0 !w-screen !h-screen !max-w-none !max-h-none !rounded-none flex flex-col p-0 gap-0 bg-background/95 supports-backdrop-filter:backdrop-blur-md ring-0"
       >
         {/* ── Header ── */}
-        <DialogHeader className="flex flex-row items-center justify-between px-4 py-3 border-b shrink-0 bg-background">
-          <div className="flex items-center gap-3 min-w-0">
-            <DialogTitle className="text-base font-medium truncate">{file.name}</DialogTitle>
-            {hasNav && (
-              <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                {currentIndex + 1} / {previewableFiles.length}
-              </span>
-            )}
+        <DialogHeader className="flex flex-row items-center justify-between gap-3 px-3 sm:px-5 py-2.5 border-b shrink-0 bg-background/80 supports-backdrop-filter:backdrop-blur-md pr-3 max-w-full overflow-hidden">
+          {/* Left: file name + meta */}
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <TooltipProvider delay={300}>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <DialogTitle
+                      className={cn(
+                        "text-sm sm:text-base font-medium truncate min-w-0 max-w-full cursor-default"
+                      )}
+                    />
+                  }
+                >
+                  {file.name}
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[min(90vw,32rem)] break-all whitespace-normal">
+                  {file.name}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <div className="hidden sm:flex items-center gap-2 shrink-0 min-w-0">
+              <Badge variant="outline" className="font-mono text-[10px] uppercase tracking-wide max-w-[8rem] truncate">
+                {shortMime(mime)}
+              </Badge>
+              <span className="text-xs text-muted-foreground tabular-nums truncate max-w-[6rem]">{formatBytes(file.size_bytes)}</span>
+              {isVersionView && (
+                <Badge variant="secondary" className="font-mono text-[10px]">
+                  v{version!.no}
+                </Badge>
+              )}
+              {hasNav && (
+                <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                  {currentIndex + 1} / {previewableFiles.length}
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-muted-foreground">{formatBytes(file.size_bytes)}</span>
+
+          {/* Right: action cluster (desktop). Mobile collapses to just Close
+              and shows the rest in a bottom action bar. */}
+          <div className="hidden sm:flex items-center gap-1 shrink-0">
+            <Button variant="outline" size="sm" onClick={handleDownload} className="h-8">
+              <Download className="h-4 w-4 mr-1.5" />
+              Download
+            </Button>
             {!isVersionView && (
               <Button
                 variant={showComments ? "default" : "ghost"}
@@ -415,47 +498,89 @@ export function PreviewModal({
                 className="h-8 w-8"
                 onClick={() => setShowComments((v) => !v)}
                 aria-label="Toggle comments"
+                title="Comments"
               >
                 <MessageSquare className="h-4 w-4" />
               </Button>
             )}
             {editable && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit} aria-label="Edit file">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={onEdit}
+                aria-label="Edit file"
+                title="Edit"
+              >
                 <Pencil className="h-4 w-4" />
               </Button>
             )}
             {isVersionView && (
-              <Button variant="default" size="sm" onClick={handleRestoreVersion}>
+              <Button variant="default" size="sm" onClick={handleRestoreVersion} className="h-8">
                 <RotateCcw className="h-4 w-4 mr-1.5" />
-                Restore v{version.no}
+                Restore v{version!.no}
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={handleDownload}>
-              <Download className="h-4 w-4 mr-1.5" />
-              Download
+            <div className="w-px h-5 bg-border mx-1" aria-hidden />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => onOpenChange(false)}
+              aria-label="Close"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onOpenChange(false)}>
+          </div>
+
+          {/* Mobile right cluster: just Close */}
+          <div className="flex sm:hidden items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => onOpenChange(false)}
+              aria-label="Close"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>
         </DialogHeader>
 
+        {/* Mobile-only sub-row: mime + size + position (visible only <sm) */}
+        <div className="flex sm:hidden items-center gap-2 px-3 py-1.5 border-b bg-background/70 shrink-0 text-xs text-muted-foreground overflow-hidden">
+          <Badge variant="outline" className="font-mono text-[10px] uppercase shrink-0">
+            {shortMime(mime)}
+          </Badge>
+          <span className="tabular-nums truncate min-w-0">{formatBytes(file.size_bytes)}</span>
+          {isVersionView && (
+            <Badge variant="secondary" className="font-mono text-[10px] shrink-0">v{version!.no}</Badge>
+          )}
+          {hasNav && (
+            <span className="ml-auto tabular-nums shrink-0">
+              {currentIndex + 1} / {previewableFiles.length}
+            </span>
+          )}
+        </div>
+
         {isVersionView && (
-          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 shrink-0">
-            <div className="text-xs min-w-0 truncate">
-              Viewing <span className="font-mono">v{version.no}</span>
-              {" "}from {formatRelative(version.createdAt)}
-              {version.username ? <> · by {version.username}</> : null}
+          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 shrink-0 max-w-full overflow-hidden">
+            <div className="text-xs min-w-0 flex-1 truncate">
+              Viewing <span className="font-mono">v{version!.no}</span>
+              {" "}from {formatRelative(version!.createdAt)}
+              {version!.username ? <> · by {version!.username}</> : null}
             </div>
             {onClearVersion && (
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 px-2 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                className="h-7 px-2 shrink-0 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40"
                 onClick={onClearVersion}
               >
                 <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                Back to current
+                <span className="hidden sm:inline">Back to current</span>
+                <span className="sm:hidden">Back</span>
               </Button>
             )}
           </div>
@@ -468,10 +593,11 @@ export function PreviewModal({
           {hasNav && prevFile && onNavigate && (
             <button
               onClick={() => onNavigate(prevFile)}
-              className="absolute left-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors shadow-lg"
+              className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/55 hover:bg-black/75 text-white transition-all shadow-lg backdrop-blur-sm hover:scale-105 active:scale-95"
               aria-label="Previous file"
+              title="Previous (←)"
             >
-              <ChevronLeft className="h-6 w-6" />
+              <ChevronLeft className="h-5 w-5 sm:h-6 sm:w-6" />
             </button>
           )}
 
@@ -479,27 +605,34 @@ export function PreviewModal({
           {hasNav && nextFile && onNavigate && (
             <button
               onClick={() => onNavigate(nextFile)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors shadow-lg"
+              className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-black/55 hover:bg-black/75 text-white transition-all shadow-lg backdrop-blur-sm hover:scale-105 active:scale-95"
               aria-label="Next file"
+              title="Next (→)"
             >
-              <ChevronRight className="h-6 w-6" />
+              <ChevronRight className="h-5 w-5 sm:h-6 sm:w-6" />
             </button>
           )}
 
-          {/* ── Doc preview: Google-Docs-style scrollable paper ── */}
-          <div className={`flex-1 min-h-0 overflow-auto ${
-            isDocPreview
-              ? "bg-neutral-200 dark:bg-neutral-800 flex justify-center py-10 px-6"
-              : "p-4 flex items-center justify-center bg-muted/20"
-          }`}>
+          {/* Centered loading overlay — sits ABOVE the content area, fades out
+              when content is ready. */}
+          {loading && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 text-muted-foreground bg-background/40 supports-backdrop-filter:backdrop-blur-sm pointer-events-none">
+              <Loader2 className="h-9 w-9 animate-spin text-foreground/70" />
+              <p className="text-xs font-medium tracking-wide">Loading preview…</p>
+            </div>
+          )}
 
-            {/* Loading spinner */}
-            {loading && (
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Loader2 className="h-8 w-8 animate-spin" />
-                <p className="text-sm">Loading preview…</p>
-              </div>
-            )}
+          {/* ── Doc preview: Google-Docs-style scrollable paper ── */}
+          <div
+            key={file.id + (version?.no ?? "")}
+            className={`flex-1 min-h-0 overflow-auto transition-opacity duration-200 ease-out ${
+              contentReady ? "opacity-100" : "opacity-0"
+            } ${
+              isDocPreview
+                ? "bg-neutral-200 dark:bg-neutral-800 flex justify-center py-6 px-2 sm:py-10 sm:px-6"
+                : "p-4 pb-20 sm:pb-4 flex items-center justify-center bg-muted/20"
+            }`}
+          >
 
             {/* Fetch error */}
             {!loading && fetchError && (
@@ -558,9 +691,16 @@ export function PreviewModal({
               </div>
             )}
 
-            {/* Videos */}
-            {!loading && blobUrl && mime.startsWith("video/") && (
-              <video src={blobUrl} controls className="max-w-full max-h-full rounded" />
+            {/* Videos route through the HLS-aware player. HLS playlist
+                is generated on demand server-side; the player falls
+                back to direct streaming if HLS isn't available, so MP4/WebM
+                still play even with ffmpeg disabled. */}
+            {!loading && mime.startsWith("video/") && (
+              <VideoPlayer
+                fileId={file.id}
+                mimeType={mime}
+                fallbackUrl={blobUrl ?? ""}
+              />
             )}
 
             {/* Audio */}
@@ -573,7 +713,7 @@ export function PreviewModal({
 
             {/* PDF */}
             {!loading && blobUrl && mime === "application/pdf" && (
-              <iframe src={blobUrl} className="w-full h-full min-h-[60vh] rounded border" title={file.name} />
+              <iframe src={blobUrl} className="w-full max-w-full h-full min-h-[60vh] rounded border" title={file.name} />
             )}
 
             {/* CSV → table */}
@@ -592,10 +732,10 @@ export function PreviewModal({
             {!loading && docHtml !== null && (
               <div
                 className="
-                  w-full max-w-[860px] self-start
+                  w-full max-w-[860px] self-start min-w-0 overflow-x-auto
                   bg-white dark:bg-neutral-900
                   shadow-xl rounded-sm
-                  px-16 py-14 text-[15px] leading-relaxed text-gray-900 dark:text-gray-100
+                  px-4 py-6 sm:px-10 sm:py-10 md:px-16 md:py-14 text-[15px] leading-relaxed text-gray-900 dark:text-gray-100
                   [&_h1]:text-3xl  [&_h1]:font-bold    [&_h1]:mt-8  [&_h1]:mb-4
                   [&_h2]:text-2xl  [&_h2]:font-bold    [&_h2]:mt-7  [&_h2]:mb-3
                   [&_h3]:text-xl   [&_h3]:font-semibold [&_h3]:mt-6  [&_h3]:mb-2
@@ -651,6 +791,59 @@ export function PreviewModal({
           </div>
 
           {showComments && !isVersionView && <CommentsPanel fileId={file.id} />}
+        </div>
+
+        {/* ── Mobile bottom action bar (visible only <sm) ── */}
+        <div className={cn(
+          "flex sm:hidden items-stretch justify-around gap-1 px-2 py-2 border-t bg-background/95 supports-backdrop-filter:backdrop-blur-md shrink-0",
+          "max-w-full overflow-x-auto"
+        )}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDownload}
+            className="flex-1 flex-col h-auto py-1.5 gap-0.5"
+            aria-label="Download"
+          >
+            <Download className="h-4 w-4" />
+            <span className="text-[10px] leading-none">Download</span>
+          </Button>
+          {!isVersionView && (
+            <Button
+              variant={showComments ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setShowComments((v) => !v)}
+              className="flex-1 flex-col h-auto py-1.5 gap-0.5"
+              aria-label="Comments"
+            >
+              <MessageSquare className="h-4 w-4" />
+              <span className="text-[10px] leading-none">Comments</span>
+            </Button>
+          )}
+          {editable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onEdit}
+              className="flex-1 flex-col h-auto py-1.5 gap-0.5"
+              aria-label="Edit"
+            >
+              <Pencil className="h-4 w-4" />
+              <span className="text-[10px] leading-none">Edit</span>
+            </Button>
+          )}
+          {isVersionView && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleRestoreVersion}
+              className="flex-1 flex-col h-auto py-1.5 gap-0.5"
+              aria-label="Restore"
+            >
+              <RotateCcw className="h-4 w-4" />
+              <span className="text-[10px] leading-none">Restore</span>
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

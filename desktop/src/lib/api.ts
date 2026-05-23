@@ -247,7 +247,7 @@ export class ApiClient {
   /* ---- files ----------------------------------------------------- */
 
   /**
-   * Resumable upload via the tus protocol (F6). The returned id comes from the
+   * Resumable upload via the tus protocol. The returned id comes from the
    * X-File-ID response header set by the backend's PreFinishResponseCallback.
    *
    * resumeUrl, if provided, allows resuming an interrupted upload from a prior

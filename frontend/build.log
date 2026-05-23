@@ -1,0 +1,7 @@
+▲ Next.js 16.2.2 (Turbopack)
+
+  Creating an optimized production build ...
+
+> Build error occurred
+Error: ENOENT: no such file or directory, open 'C:\Users\omrio\Desktop\projects\MyCloud\frontend\.next\static\H0FFXDzbwq17FfTvhNqYx\_buildManifest.js.tmp.bb7vzvf6w35'
+    at ignore-listed frames

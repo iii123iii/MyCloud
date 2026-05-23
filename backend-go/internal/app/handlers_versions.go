@@ -24,7 +24,7 @@ func (a *App) handleListVersions(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	rows, err := a.DB.QueryContext(r.Context(), `
@@ -34,7 +34,7 @@ func (a *App) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		WHERE v.file_id = ?
 		ORDER BY v.version_no DESC`, fileID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -45,7 +45,7 @@ func (a *App) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		var createdAt, createdBy string
 		var username sql.NullString
 		if err := rows.Scan(&versionNo, &size, &createdAt, &createdBy, &username); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{
@@ -79,13 +79,13 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
 	tx, err := a.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	committed := false
@@ -102,7 +102,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		SELECT user_id, storage_path, size_bytes, encryption_key_enc, encryption_iv, encryption_tag
 		FROM files WHERE id = ? AND is_deleted = 0`, fileID,
 	).Scan(&ownerID, &curPath, &curSize, &curKey, &curIV, &curTag); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -117,7 +117,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Version not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -126,7 +126,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRowContext(r.Context(),
 		"SELECT COALESCE(MAX(version_no), 0) FROM file_versions WHERE file_id = ?", fileID,
 	).Scan(&maxNo); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	newVersionNo := int(maxNo.Int64) + 1
@@ -139,7 +139,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snapshotID, fileID, newVersionNo, newVersionPath, curSize,
 		curKey, curIV, curTag, userID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -147,7 +147,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 	if _, err := tx.ExecContext(r.Context(),
 		"DELETE FROM file_versions WHERE file_id = ? AND version_no = ?",
 		fileID, versionNo); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -157,7 +157,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		SET size_bytes = ?, encryption_key_enc = ?, encryption_iv = ?, encryption_tag = ?
 		WHERE id = ?`,
 		verSize, verKey, verIV, verTag, fileID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -189,7 +189,7 @@ func (a *App) handleRestoreVersion(w http.ResponseWriter, r *http.Request) {
 		_ = os.Rename(newVersionPath, tmpSwap)
 		_ = os.Rename(curPath, verPath)
 		_ = os.Rename(tmpSwap, curPath)
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	committed = true
@@ -226,7 +226,7 @@ func (a *App) streamVersion(w http.ResponseWriter, r *http.Request, disposition 
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	var name, mimeType, encKey, iv, tag, path string
@@ -240,7 +240,7 @@ func (a *App) streamVersion(w http.ResponseWriter, r *http.Request, disposition 
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	fileKey, err := storage.UnwrapKey(a.Config.MasterEncryptionKey, storage.EncryptedKeyBundle{

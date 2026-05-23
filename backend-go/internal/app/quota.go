@@ -4,12 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
+
+	"mycloud/backend-go/internal/logging"
 )
 
 // ErrQuotaExceeded is returned by reserveQuota when adding size to the user's
 // used_bytes would exceed their quota_bytes.
 var ErrQuotaExceeded = errors.New("storage quota exceeded")
+
+// ErrInvalidFilename is returned by upload paths when the supplied filename
+// fails structural validation (empty after cleaning, traversal, control
+// chars). Handlers surface this as 400 bad_request.
+var ErrInvalidFilename = errors.New("invalid filename")
 
 // reserveQuota atomically increments users.used_bytes by size if the new
 // total stays within quota_bytes. Returns ErrQuotaExceeded otherwise.
@@ -33,14 +39,19 @@ func reserveQuota(ctx context.Context, tx *sql.Tx, userID string, size int64) er
 		_ = tx.QueryRowContext(ctx,
 			"SELECT used_bytes, quota_bytes FROM users WHERE id=?", userID,
 		).Scan(&used, &quota)
-		log.Printf("reserveQuota rejected: user=%s size=%d used=%d quota=%d", userID, size, used, quota)
+		logging.FromContext(ctx).Warn("reserveQuota rejected",
+			"user_id", userID,
+			"size", size,
+			"used", used,
+			"quota", quota,
+		)
 		return ErrQuotaExceeded
 	}
 	return nil
 }
 
 // releaseQuota decrements users.used_bytes by size with a floor of zero.
-// Used when a file is permanently deleted or a blob ref is dropped (F7).
+// Used when a file is permanently deleted or a blob ref is dropped.
 func releaseQuota(ctx context.Context, ex sqlExec, userID string, size int64) error {
 	_, err := ex.ExecContext(ctx, `
 		UPDATE users

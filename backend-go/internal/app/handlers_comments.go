@@ -22,7 +22,7 @@ func (a *App) handleListComments(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	rows, err := a.DB.QueryContext(r.Context(), `
@@ -32,7 +32,7 @@ func (a *App) handleListComments(w http.ResponseWriter, r *http.Request) {
 		WHERE c.file_id = ? AND c.deleted_at IS NULL
 		ORDER BY c.created_at ASC`, fileID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -40,7 +40,7 @@ func (a *App) handleListComments(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, uid, username, body, createdAt, updatedAt string
 		if err := rows.Scan(&id, &uid, &username, &body, &createdAt, &updatedAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		out = append(out, map[string]any{
@@ -80,7 +80,7 @@ func (a *App) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	id := uuid.NewString()
@@ -88,7 +88,7 @@ func (a *App) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		"INSERT INTO comments (id, file_id, user_id, body) VALUES (?, ?, ?, ?)",
 		id, fileID, userID, payload.Body,
 	); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "comment.post", "file", fileID, clientIP(r), nil)
@@ -118,7 +118,7 @@ func (a *App) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 		"UPDATE comments SET body=? WHERE id=? AND user_id=? AND deleted_at IS NULL",
 		payload.Body, id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -142,7 +142,7 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if authorID != userID {
@@ -158,7 +158,7 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.DB.ExecContext(r.Context(),
 		"UPDATE comments SET deleted_at=NOW() WHERE id=?", id,
 	); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "comment.delete", "comment", id, clientIP(r), nil)

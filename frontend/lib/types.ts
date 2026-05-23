@@ -14,6 +14,14 @@ export interface User {
 export interface AuthTokens {
   access_token: string;
   refresh_token: string;
+  // Server-provided JTI for the access token. The WebSocket provider matches
+  // session_revoked events against this to kick this device out immediately.
+  // Previously decoded from the JWT payload on the client; now sent
+  // explicitly so we don't depend on JWT shape.
+  access_jti?: string;
+  refresh_jti?: string;
+  // Session family ID — links access+refresh pairs across refresh rotations.
+  family?: string;
   token_type: string;
   user_id: string;
   username: string;
@@ -33,6 +41,12 @@ export interface FileItem {
   is_deleted?: boolean;
   created_at: string;
   updated_at: string;
+  // Present when the item is not owned by the caller (shared via a grant).
+  // owner_id is the resource owner; permission is the caller's effective grant
+  // level. Used to gate write affordances when browsing a shared folder.
+  owner_id?: string;
+  shared?: boolean;
+  permission?: GrantPermission;
 }
 
 export interface FolderItem {
@@ -41,6 +55,15 @@ export interface FolderItem {
   parent_id?: string;
   created_at: string;
   updated_at?: string;
+  // Mirrors files.is_starred for UX parity. Backed by the user_favorites
+  // table (sidebar pin list) — there is no folder.is_starred column. List
+  // endpoints LEFT JOIN to populate it; toggling routes through the
+  // favourites endpoints (or /files:batch with folder_ids for batch ops).
+  is_favorited?: boolean;
+  // Set when browsing a folder shared with the caller — see FileItem above.
+  owner_id?: string;
+  shared?: boolean;
+  permission?: GrantPermission;
 }
 
 export type DriveItem =

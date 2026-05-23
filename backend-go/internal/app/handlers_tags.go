@@ -21,7 +21,7 @@ func (a *App) handleListTags(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.DB.QueryContext(r.Context(),
 		`SELECT id, name, color, created_at FROM tags WHERE user_id=? ORDER BY name ASC`, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -29,7 +29,7 @@ func (a *App) handleListTags(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, name, color, createdAt string
 		if err := rows.Scan(&id, &name, &color, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		out = append(out, map[string]any{
@@ -72,11 +72,11 @@ func (a *App) handleCreateTag(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.DB.ExecContext(r.Context(),
 		"INSERT INTO tags (id, user_id, name, color) VALUES (?, ?, ?, ?)",
 		id, userID, payload.Name, payload.Color); err != nil {
-		if strings.Contains(err.Error(), "Duplicate") {
+		if IsDuplicate(err) {
 			httpapi.Error(w, http.StatusConflict, "duplicate", "A tag with this name already exists")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "tag.create", "tag", id, clientIP(r),
@@ -124,7 +124,7 @@ func (a *App) handleUpdateTag(w http.ResponseWriter, r *http.Request) {
 	res, err := a.DB.ExecContext(r.Context(),
 		"UPDATE tags SET "+strings.Join(sets, ", ")+" WHERE id=? AND user_id=?", args...)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -140,7 +140,7 @@ func (a *App) handleDeleteTag(w http.ResponseWriter, r *http.Request) {
 	res, err := a.DB.ExecContext(r.Context(),
 		"DELETE FROM tags WHERE id=? AND user_id=?", id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -159,7 +159,7 @@ func (a *App) handleAttachTagToFile(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if err := a.ensureOwnTag(r.Context(), userID, tagID); err != nil {
@@ -167,12 +167,12 @@ func (a *App) handleAttachTagToFile(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Tag not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(),
 		"INSERT IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)", fileID, tagID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "tag.attach", "file", fileID, clientIP(r),
@@ -189,12 +189,12 @@ func (a *App) handleDetachTagFromFile(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(),
 		"DELETE FROM file_tags WHERE file_id=? AND tag_id=?", fileID, tagID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "tag.detach", "file", fileID, clientIP(r),
@@ -206,12 +206,12 @@ func (a *App) handleAttachTagToFolder(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	folderID := chi.URLParam(r, "id")
 	tagID := chi.URLParam(r, "tagId")
-	if err := a.canAccessFolder(r.Context(), userID, folderID, AccessEditor); err != nil {
+	if _, err := a.canAccessFolder(r.Context(), userID, folderID, AccessEditor); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if err := a.ensureOwnTag(r.Context(), userID, tagID); err != nil {
@@ -219,12 +219,12 @@ func (a *App) handleAttachTagToFolder(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Tag not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(),
 		"INSERT IGNORE INTO folder_tags (folder_id, tag_id) VALUES (?, ?)", folderID, tagID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "tag.attach", "folder", folderID, clientIP(r),
@@ -236,17 +236,17 @@ func (a *App) handleDetachTagFromFolder(w http.ResponseWriter, r *http.Request) 
 	userID := userIDFrom(r)
 	folderID := chi.URLParam(r, "id")
 	tagID := chi.URLParam(r, "tagId")
-	if err := a.canAccessFolder(r.Context(), userID, folderID, AccessEditor); err != nil {
+	if _, err := a.canAccessFolder(r.Context(), userID, folderID, AccessEditor); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Folder not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if _, err := a.DB.ExecContext(r.Context(),
 		"DELETE FROM folder_tags WHERE folder_id=? AND tag_id=?", folderID, tagID); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	writeActivity(r.Context(), a.DB, &userID, "tag.detach", "folder", folderID, clientIP(r),

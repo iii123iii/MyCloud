@@ -59,12 +59,12 @@ func (a *App) handleCreateFromHash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.FolderID != nil && *payload.FolderID != "" {
-		if err := a.canAccessFolder(r.Context(), userID, *payload.FolderID, AccessEditor); err != nil {
+		if _, err := a.canAccessFolder(r.Context(), userID, *payload.FolderID, AccessEditor); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				httpapi.Error(w, http.StatusBadRequest, "invalid_parent", "Folder not found")
 				return
 			}
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 	}
@@ -82,13 +82,13 @@ func (a *App) handleCreateFromHash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
 	tx, err := a.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	committed := false
@@ -103,7 +103,7 @@ func (a *App) handleCreateFromHash(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusRequestEntityTooLarge, "quota_exceeded", err.Error())
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -116,22 +116,23 @@ func (a *App) handleCreateFromHash(w http.ResponseWriter, r *http.Request) {
 	if useMime == "" {
 		useMime = detectMime(payload.Name)
 	}
+	// name_normalised mirrors `name` for fuzzy-search indexing.
 	if _, err := tx.ExecContext(r.Context(), `
-		INSERT INTO files (id, name, storage_path, size_bytes, mime_type, user_id, folder_id,
+		INSERT INTO files (id, name, name_normalised, storage_path, size_bytes, mime_type, user_id, folder_id,
 		                   encryption_key_enc, encryption_iv, encryption_tag,
 		                   content_sha256, is_deleted, is_starred)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-		id, payload.Name, storagePath, size, useMime, userID, folderArg,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+		id, payload.Name, normaliseName(payload.Name), storagePath, size, useMime, userID, folderArg,
 		key, iv, tag, payload.Hash); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if err := acquireBlobRef(r.Context(), tx, storagePath); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	committed = true

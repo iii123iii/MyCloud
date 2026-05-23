@@ -50,7 +50,7 @@ func (a *App) handleOfficeConfig(w http.ResponseWriter, r *http.Request) {
 	if err := a.DB.QueryRowContext(r.Context(),
 		"SELECT name, mime_type FROM files WHERE id=?", fileID,
 	).Scan(&fileName, &mimeType); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	ext, ok := supportedOfficeMimes[mimeType]
@@ -66,7 +66,7 @@ func (a *App) handleOfficeConfig(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO office_sessions (id, file_id, user_id, edit_key)
 		VALUES (?, ?, ?, ?)`,
 		sessionID, fileID, userID, editKey); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 
@@ -189,12 +189,12 @@ func (a *App) handleOfficeCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Validate session.
-	var ownerID string
+	// Validate session. The session user is the acting editor.
+	var editorID string
 	if err := a.DB.QueryRowContext(r.Context(),
 		"SELECT user_id FROM office_sessions WHERE edit_key=? AND file_id=?",
 		editKey, fileID,
-	).Scan(&ownerID); err != nil {
+	).Scan(&editorID); err != nil {
 		http.Error(w, "invalid key", http.StatusUnauthorized)
 		return
 	}
@@ -225,8 +225,17 @@ func (a *App) handleOfficeCallback(w http.ResponseWriter, r *http.Request) {
 			folderID = folder.String
 		}
 
+		// The editor must hold write access; the resulting version is attributed
+		// to the file's owner so a shared-file edit versions the owner's file
+		// rather than spawning a duplicate owned by the editor.
+		fileOwnerID, aerr := a.canAccessFile(r.Context(), editorID, fileID, AccessEditor)
+		if aerr != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
 		// Save via the same path uploads go through.
-		if err := a.saveOfficeEdit(r, ownerID, name, folderID, mimeType, resp.Body); err != nil {
+		if err := a.saveOfficeEdit(r, editorID, fileOwnerID, name, folderID, mimeType, resp.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -240,7 +249,10 @@ func (a *App) handleOfficeCallback(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"error":0}`))
 }
 
-func (a *App) saveOfficeEdit(r *http.Request, userID, filename, folderID, mimeType string, body io.Reader) error {
+// saveOfficeEdit stores an OnlyOffice edit as a new version. uploaderID is the
+// acting editor (recorded as the version's created_by); ownerID is the file's
+// owner the bytes are attributed to (quota, storage path, same-name scope).
+func (a *App) saveOfficeEdit(r *http.Request, uploaderID, ownerID, filename, folderID, mimeType string, body io.Reader) error {
 	fileKey, err := storage.GenerateFileKey()
 	if err != nil {
 		return err
@@ -269,12 +281,12 @@ func (a *App) saveOfficeEdit(r *http.Request, userID, filename, folderID, mimeTy
 		_ = os.Remove(tmpPath)
 		return closeErr
 	}
-	if _, err := storage.EnsureUserDir(a.Config.StoragePath, userID); err != nil {
+	if _, err := storage.EnsureUserDir(a.Config.StoragePath, ownerID); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
 	contentHash := hasher.HexSum()
-	if _, err := a.commitUploadWithVersioning(r.Context(), userID, filename, folderID, mimeType,
+	if _, err := a.commitUploadWithVersioning(r.Context(), uploaderID, ownerID, filename, folderID, mimeType,
 		contentHash, size, bundle, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

@@ -28,7 +28,7 @@ func (a *App) handleMyActivity(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.DB.QueryContext(r.Context(), query, args...)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -38,7 +38,7 @@ func (a *App) handleMyActivity(w http.ResponseWriter, r *http.Request) {
 		var action, createdAt string
 		var resourceType, resourceID, ip sql.NullString
 		if err := rows.Scan(&id, &action, &resourceType, &resourceID, &ip, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{"id": id, "action": action, "created_at": createdAt}

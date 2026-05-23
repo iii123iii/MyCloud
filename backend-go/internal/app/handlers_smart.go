@@ -31,7 +31,7 @@ func (a *App) handleListSmartFolders(w http.ResponseWriter, r *http.Request) {
 		"SELECT id, name, query_json, color, created_at FROM smart_folders WHERE user_id=? ORDER BY name ASC",
 		userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -40,7 +40,7 @@ func (a *App) handleListSmartFolders(w http.ResponseWriter, r *http.Request) {
 		var id, name, q, createdAt string
 		var color sql.NullString
 		if err := rows.Scan(&id, &name, &q, &color, &createdAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		var query SmartQuery
@@ -84,11 +84,11 @@ func (a *App) handleCreateSmartFolder(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.DB.ExecContext(r.Context(),
 		"INSERT INTO smart_folders (id, user_id, name, query_json, color) VALUES (?, ?, ?, ?, ?)",
 		id, userID, payload.Name, string(queryJSON), colorArg); err != nil {
-		if strings.Contains(err.Error(), "Duplicate") {
+		if IsDuplicate(err) {
 			httpapi.Error(w, http.StatusConflict, "duplicate", "A smart folder with this name already exists")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	httpapi.JSON(w, http.StatusCreated, map[string]any{"id": id}, nil)
@@ -129,7 +129,7 @@ func (a *App) handleUpdateSmartFolder(w http.ResponseWriter, r *http.Request) {
 	res, err := a.DB.ExecContext(r.Context(),
 		"UPDATE smart_folders SET "+strings.Join(sets, ", ")+" WHERE id=? AND user_id=?", args...)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -145,7 +145,7 @@ func (a *App) handleDeleteSmartFolder(w http.ResponseWriter, r *http.Request) {
 	res, err := a.DB.ExecContext(r.Context(),
 		"DELETE FROM smart_folders WHERE id=? AND user_id=?", id, userID)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -168,7 +168,7 @@ func (a *App) handleSmartFolderResults(w http.ResponseWriter, r *http.Request) {
 			httpapi.Error(w, http.StatusNotFound, "not_found", "Smart folder not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	var q SmartQuery
@@ -228,7 +228,7 @@ func (a *App) handleSmartFolderResults(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.DB.QueryContext(r.Context(), query, args...)
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -239,7 +239,7 @@ func (a *App) handleSmartFolderResults(w http.ResponseWriter, r *http.Request) {
 		var folder sql.NullString
 		var starred bool
 		if err := rows.Scan(&id, &fname, &size, &mime, &folder, &starred, &createdAt, &updatedAt); err != nil {
-			httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			respondDBError(w, r, err)
 			return
 		}
 		item := map[string]any{

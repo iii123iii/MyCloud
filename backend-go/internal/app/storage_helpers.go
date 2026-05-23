@@ -39,6 +39,57 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
+// sanitizeUploadName cleans a user-supplied filename for safe storage and
+// later retrieval. Returns "", false when the name is structurally unsafe —
+// callers reject the upload with 400. This is the only place upload code
+// should trust a filename:
+//   - filepath.Base strips any leading directory components ("../../etc/passwd"
+//     becomes "passwd") so the name can never escape the user's storage dir.
+//   - filepath.Clean normalises "./", "../" sequences before Base sees them.
+//   - control bytes (incl. CR/LF/NUL) are removed so the name can't inject
+//     into Content-Disposition or zip header fields.
+//   - bare "." / ".." after cleaning are rejected outright; they don't
+//     identify a file and produce surprising behaviour in zip readers.
+func sanitizeUploadName(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	// Replace backslashes so Base() on Linux still strips Windows-style
+	// paths sent by web clients.
+	raw = strings.ReplaceAll(raw, "\\", "/")
+	name := filepath.Base(filepath.Clean(raw))
+	if name == "." || name == ".." || name == "" || name == string(filepath.Separator) {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		// Belt-and-braces: any path separator that survived Base is a bug.
+		if r == '/' || r == '\\' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	cleaned := strings.TrimSpace(b.String())
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "", false
+	}
+	// Cap at 255 bytes — most filesystems' NAME_MAX. Trailing-truncation by
+	// rune count to avoid splitting a multi-byte character.
+	if len(cleaned) > 255 {
+		runes := []rune(cleaned)
+		for len(string(runes)) > 255 && len(runes) > 0 {
+			runes = runes[:len(runes)-1]
+		}
+		cleaned = string(runes)
+	}
+	return cleaned, true
+}
+
 func (a *App) parseUpload(r *http.Request) (string, *multipart.Part, error) {
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -67,7 +118,33 @@ func (a *App) parseUpload(r *http.Request) (string, *multipart.Part, error) {
 	return folderID, nil, fmt.Errorf("no file part")
 }
 
+// resolveUploadOwner returns the user an upload should be attributed to. For a
+// folder upload that's the folder's owner (the uploader must hold at least
+// editor access — so collaborators add into the owner's tree); for a root
+// upload it's the uploader. A missing or inaccessible folder maps to
+// ErrFolderNotFound.
+func (a *App) resolveUploadOwner(ctx context.Context, uploaderID, folderID string) (string, error) {
+	if folderID == "" {
+		return uploaderID, nil
+	}
+	ownerID, err := a.canAccessFolder(ctx, uploaderID, folderID, AccessEditor)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrFolderNotFound
+		}
+		return "", err
+	}
+	return ownerID, nil
+}
+
 func (a *App) storeUploadedFile(ctx context.Context, userID, filename, folderID string, filePart *multipart.Part) (map[string]any, error) {
+	// Resolve who the upload is attributed to. Uploading into a shared folder
+	// (editor access) creates the file under the folder OWNER; a root upload is
+	// owned by the uploader. Fails fast before we spend cycles encrypting.
+	ownerID, err := a.resolveUploadOwner(ctx, userID, folderID)
+	if err != nil {
+		return nil, err
+	}
 	fileID := uuid.NewString()
 	fileKey, err := storage.GenerateFileKey()
 	if err != nil {
@@ -100,7 +177,7 @@ func (a *App) storeUploadedFile(ctx context.Context, userID, filename, folderID 
 		return nil, closeErr
 	}
 
-	if _, err := storage.EnsureUserDir(a.Config.StoragePath, userID); err != nil {
+	if _, err := storage.EnsureUserDir(a.Config.StoragePath, ownerID); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, err
 	}
@@ -109,7 +186,7 @@ func (a *App) storeUploadedFile(ctx context.Context, userID, filename, folderID 
 	// Versioning: if a non-deleted same-name file exists in the target folder,
 	// replace it in place and snapshot the previous current into file_versions.
 	// Keeps the file ID stable so shares/comments/tags survive the upload.
-	commit, err := a.commitUploadWithVersioning(ctx, userID, filename, folderID, mimeType, contentHash, size, bundle, tmpPath)
+	commit, err := a.commitUploadWithVersioning(ctx, userID, ownerID, filename, folderID, mimeType, contentHash, size, bundle, tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, err
@@ -151,8 +228,22 @@ type uploadCommit struct {
 //
 // On commit failure, any disk moves we made are reversed best-effort. The
 // caller still owns os.Remove(tmpPath) for non-commit-related failures.
-func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, folderID, mimeType, contentHash string,
+// uploaderID is the acting user (recorded as created_by on any version row);
+// ownerID is the resource owner the file is attributed to (its user_id, quota,
+// storage path, dedup + same-name scope). They differ when a collaborator
+// uploads into a shared folder.
+func (a *App) commitUploadWithVersioning(ctx context.Context, uploaderID, ownerID, filename, folderID, mimeType, contentHash string,
 	size int64, bundle storage.EncryptedKeyBundle, tmpPath string) (uploadCommit, error) {
+
+	// Defence in depth: every upload entry point should have sanitized the
+	// name already, but commit is the last line where the value enters the
+	// DB + on-disk record. Reject here too so a bypass anywhere upstream
+	// can't write a traversal name to disk.
+	cleaned, ok := sanitizeUploadName(filename)
+	if !ok {
+		return uploadCommit{}, ErrInvalidFilename
+	}
+	filename = cleaned
 
 	tx, err := a.DB.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
@@ -184,8 +275,8 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 		var exists int
 		if err := tx.QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM folders WHERE id=? AND user_id=? AND is_deleted=0",
-			folderID, userID).Scan(&exists); err != nil || exists == 0 {
-			return uploadCommit{}, fmt.Errorf("folder not found")
+			folderID, ownerID).Scan(&exists); err != nil || exists == 0 {
+			return uploadCommit{}, ErrFolderNotFound
 		}
 	}
 
@@ -196,10 +287,10 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 	var oldSize int64
 	folderArg := nullableString(folderID)
 	whereFolder := "folder_id IS NULL"
-	sameNameArgs := []any{filename, userID}
+	sameNameArgs := []any{filename, ownerID}
 	if folderID != "" {
 		whereFolder = "folder_id = ?"
-		sameNameArgs = []any{filename, userID, folderID}
+		sameNameArgs = []any{filename, ownerID, folderID}
 	}
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, encryption_key_enc, encryption_iv, encryption_tag, storage_path,
@@ -221,19 +312,19 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 		return uploadCommit{fileID: existingID}, nil
 	}
 
-	// All remaining paths add `size` to the user's storage usage.
-	if err := reserveQuota(ctx, tx, userID, size); err != nil {
+	// All remaining paths add `size` to the owner's storage usage.
+	if err := reserveQuota(ctx, tx, ownerID, size); err != nil {
 		return uploadCommit{}, err
 	}
 
 	// Helper: find a dedup candidate for the new content (any non-deleted file
-	// owned by this user with the same hash, optionally excluding existingID).
+	// owned by the resource owner with the same hash, optionally excluding existingID).
 	findDedup := func(excludeID string) (storagePath, key, iv, tag string, hit bool, err error) {
 		query := `
 			SELECT storage_path, encryption_key_enc, encryption_iv, encryption_tag
 			FROM files
 			WHERE user_id = ? AND content_sha256 = ? AND is_deleted = 0`
-		args := []any{userID, contentHash}
+		args := []any{ownerID, contentHash}
 		if excludeID != "" {
 			query += " AND id != ?"
 			args = append(args, excludeID)
@@ -263,19 +354,22 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 			keyHex, ivHex, tagHex = dedupKey, dedupIV, dedupTag
 			_ = os.Remove(tmpPath) // discard the wasted ciphertext
 		} else {
-			storagePath = storage.FinalPath(a.Config.StoragePath, userID, fileID)
+			storagePath = storage.FinalPath(a.Config.StoragePath, ownerID, fileID)
 			keyHex, ivHex, tagHex = bundle.EncKeyHex, bundle.IVHex, bundle.TagHex
 			if err := os.Rename(tmpPath, storagePath); err != nil {
 				return uploadCommit{}, err
 			}
 			undos = append(undos, undo{from: tmpPath, to: storagePath})
 		}
+		// name_normalised mirrors `name` so fuzzy search has an
+		// indexable lowercased value for new uploads (not just the
+		// migration backfill).
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO files (id, name, storage_path, size_bytes, mime_type, user_id, folder_id,
+			INSERT INTO files (id, name, name_normalised, storage_path, size_bytes, mime_type, user_id, folder_id,
 			                   encryption_key_enc, encryption_iv, encryption_tag,
 			                   content_sha256, is_deleted, is_starred)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-			fileID, filename, storagePath, size, mimeType, userID, folderArg,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+			fileID, filename, normaliseName(filename), storagePath, size, mimeType, ownerID, folderArg,
 			keyHex, ivHex, tagHex, contentHash); err != nil {
 			return uploadCommit{}, err
 		}
@@ -306,7 +400,7 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 		                           encryption_key_enc, encryption_iv, encryption_tag, created_by)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		versionID, existingID, versionNo, oldPath, oldSize,
-		oldKey, oldIV, oldTag, userID); err != nil {
+		oldKey, oldIV, oldTag, uploaderID); err != nil {
 		return uploadCommit{}, err
 	}
 	if err := acquireBlobRef(ctx, tx, oldPath); err != nil {
@@ -325,7 +419,7 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 		_ = os.Remove(tmpPath)
 	} else {
 		// Use a fresh UUID-named path so we never collide with the now-versioned oldPath.
-		newPath = storage.FinalPath(a.Config.StoragePath, userID, uuid.NewString())
+		newPath = storage.FinalPath(a.Config.StoragePath, ownerID, uuid.NewString())
 		newKey, newIV, newTag = bundle.EncKeyHex, bundle.IVHex, bundle.TagHex
 		if err := os.Rename(tmpPath, newPath); err != nil {
 			return uploadCommit{}, err
@@ -354,7 +448,7 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 	}
 
 	// Prune older versions beyond the configured cap.
-	prunedPaths, prunedSize, err := a.pruneVersionsTx(ctx, tx, userID, existingID)
+	prunedPaths, prunedSize, err := a.pruneVersionsTx(ctx, tx, ownerID, existingID)
 	if err != nil {
 		return uploadCommit{}, err
 	}
@@ -368,7 +462,7 @@ func (a *App) commitUploadWithVersioning(ctx context.Context, userID, filename, 
 		}
 	}
 	if prunedSize > 0 {
-		if err := releaseQuota(ctx, tx, userID, prunedSize); err != nil {
+		if err := releaseQuota(ctx, tx, ownerID, prunedSize); err != nil {
 			return uploadCommit{}, err
 		}
 	}
@@ -442,20 +536,29 @@ func (a *App) serveFile(w http.ResponseWriter, r *http.Request, fileID, disposit
 			httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 			return
 		}
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
 		return
 	}
-	var name, mimeType, encKey, iv, tag, path string
+	var name, mimeType, encKey, iv, tag, path, updatedAt string
+	var sizeBytes int64
 	err := a.DB.QueryRowContext(r.Context(), `
-		SELECT name, mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path
+		SELECT name, mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path, size_bytes, updated_at
 		FROM files WHERE id=? AND is_deleted=0`, fileID).
-		Scan(&name, &mimeType, &encKey, &iv, &tag, &path)
+		Scan(&name, &mimeType, &encKey, &iv, &tag, &path, &sizeBytes, &updatedAt)
 	if err == sql.ErrNoRows {
 		httpapi.Error(w, http.StatusNotFound, "not_found", "File not found")
 		return
 	}
 	if err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+		respondDBError(w, r, err)
+		return
+	}
+	// Conditional GET — if the client already holds this exact representation
+	// (same size and same updated_at), 304 it without touching disk or the
+	// crypto pipeline. ETag is set in either branch so the NEXT request can
+	// be conditional too.
+	etag := httpapi.For(sizeBytes, updatedAt)
+	if httpapi.CheckIfNoneMatch(w, r, etag) {
 		return
 	}
 	fileKey, err := storage.UnwrapKey(a.Config.MasterEncryptionKey, storage.EncryptedKeyBundle{

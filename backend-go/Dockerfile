@@ -31,7 +31,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+# ffmpeg is required for HLS adaptive video streaming. Adds ~120 MB
+# to the runtime image — acceptable for the in-process transcoder design.
+# Operators who don't need HLS can swap to a slimmer base; the binary
+# tolerates ffmpeg's absence at runtime (HLS endpoints return 503).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tzdata ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV MYCLOUD_VERSION_FILE=/etc/mycloud/version
 
