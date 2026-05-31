@@ -33,12 +33,12 @@ type App struct {
 	// resolution by token). Dynamic SQL (variable IN-clauses, optional WHERE
 	// fragments) must keep using DB.QueryContext directly so we don't blow up
 	// the cache with one-shot statements.
-	Stmts      *stmtcache.Cache
+	Stmts *stmtcache.Cache
 	// Cluster routes reads to a replica when DB_REPLICA_DSN is set; falls
 	// back to the primary otherwise. Handlers should prefer Cluster.Read/
 	// Write over DB directly for new code (migration is gradual).
-	Cluster    *cluster.Cluster
-	Metrics    *metrics.Metrics
+	Cluster *cluster.Cluster
+	Metrics *metrics.Metrics
 	// SearchSF coalesces in-flight identical search queries. Bursts from
 	// "user types fast" debounced badly or multiple tabs open the same
 	// search land on the same query without N×DB hits.
@@ -56,13 +56,17 @@ type App struct {
 	Auth       *auth.Manager
 	Router     chi.Router
 	Client     *http.Client
-	TusHandler http.Handler
-	StartUTC   time.Time
+	// webhookClient is dedicated to outbound webhook delivery: it carries the
+	// dial-time SSRF guard and never follows redirects. Kept separate from
+	// Client so general outbound calls (updater, OnlyOffice) are unaffected.
+	webhookClient *http.Client
+	TusHandler    http.Handler
+	StartUTC      time.Time
 
 	// updateMu guards the fields below, which track activity-log writes for updates.
-	updateMu              sync.Mutex
-	updateStarted         bool   // true once an apply was triggered in this session
-	updateCompletionLogged bool  // true once a succeeded/failed log entry was written
+	updateMu               sync.Mutex
+	updateStarted          bool // true once an apply was triggered in this session
+	updateCompletionLogged bool // true once a succeeded/failed log entry was written
 }
 
 func New(cfg config.Config) (http.Handler, func(), error) {
@@ -111,6 +115,7 @@ func New(cfg config.Config) (http.Handler, func(), error) {
 			"thumb":       {},
 			"extract":     {},
 			"hls":         {},
+			"webhook":     {},
 		},
 		Redis:    redisClient,
 		Auth:     auth.NewManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL, redisClient),
@@ -120,6 +125,9 @@ func New(cfg config.Config) (http.Handler, func(), error) {
 	// Install slow-query hook so stmt-cached queries that exceed the
 	// threshold land in slow_queries and the admin live tail.
 	app.Stmts.SetSlowHook(app.recordSlowQuery)
+
+	// Dedicated SSRF-guarded client for outbound webhook delivery.
+	app.webhookClient = newWebhookClient(cfg, app.ssrfControl)
 
 	// Hub depends on app.Auth, so build it after the App skeleton exists.
 	app.Hub = wsHub.New(wsHub.NewInMemoryBroker())
@@ -150,6 +158,12 @@ func New(cfg config.Config) (http.Handler, func(), error) {
 	// Errors are swallowed: the DB write already happened, the WS push is a
 	// best-effort hint to refresh.
 	publishActivity = func(ctx context.Context, _ querier, userID *string, action, resourceType, resourceID string, details []byte) {
+		// Fan out to the user's outbound webhooks. Cheap on the request path:
+		// a gated SISMEMBER + LPUSH; the worker resolves subscriptions and
+		// delivers. Runs regardless of the WS hub being present.
+		if userID != nil {
+			app.fanOutWebhook(ctx, *userID, action, resourceType, resourceID, details)
+		}
 		if app.Hub == nil {
 			return
 		}

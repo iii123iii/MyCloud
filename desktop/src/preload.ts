@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 export interface DesktopApi {
   getState: () => Promise<unknown>;
   login: (payload: unknown) => Promise<unknown>;
+  signInWithToken: (payload: unknown) => Promise<unknown>;
   logout: () => Promise<unknown>;
   pickFolder: () => Promise<string | null>;
   addFolder: (folderPath: string) => Promise<unknown>;
@@ -13,6 +14,7 @@ export interface DesktopApi {
   setAutoSyncInterval: (minutes: number) => Promise<unknown>;
   openFolder: (rootId: string) => Promise<boolean>;
   openWeb: () => Promise<boolean>;
+  openTokenSettings: (apiBaseUrl?: string) => Promise<boolean>;
   showWindow: () => Promise<boolean>;
   hideWindow: () => Promise<boolean>;
   getStorageStats: () => Promise<unknown>;
@@ -22,6 +24,7 @@ export interface DesktopApi {
 const desktopApi: DesktopApi = {
   getState:             () => ipcRenderer.invoke("app:get-state"),
   login:                (payload) => ipcRenderer.invoke("auth:login", payload),
+  signInWithToken:      (payload) => ipcRenderer.invoke("auth:signInWithToken", payload),
   logout:               () => ipcRenderer.invoke("auth:logout"),
   pickFolder:           () => ipcRenderer.invoke("folders:pick"),
   addFolder:            (folderPath) => ipcRenderer.invoke("folders:add", folderPath),
@@ -32,6 +35,7 @@ const desktopApi: DesktopApi = {
   setAutoSyncInterval:  (minutes) => ipcRenderer.invoke("sync:set-auto-interval", minutes),
   openFolder:           (rootId) => ipcRenderer.invoke("folders:open", rootId),
   openWeb:              () => ipcRenderer.invoke("app:open-web"),
+  openTokenSettings:    (apiBaseUrl) => ipcRenderer.invoke("app:open-token-settings", apiBaseUrl),
   showWindow:           () => ipcRenderer.invoke("window:show"),
   hideWindow:           () => ipcRenderer.invoke("window:hide"),
   getStorageStats:      () => ipcRenderer.invoke("app:get-storage-stats"),

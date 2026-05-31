@@ -25,14 +25,16 @@ import (
 type Metrics struct {
 	Reg *prometheus.Registry
 
-	RequestsTotal    *prometheus.CounterVec
-	RequestDuration  *prometheus.HistogramVec
-	DBQueryDuration  *prometheus.HistogramVec
-	StmtCacheSize    prometheus.Gauge
-	QueueDepth       *prometheus.GaugeVec
-	DLQPushed        *prometheus.CounterVec
-	WSConnections    prometheus.Gauge
-	WSMessagesTotal  *prometheus.CounterVec
+	RequestsTotal     *prometheus.CounterVec
+	RequestDuration   *prometheus.HistogramVec
+	DBQueryDuration   *prometheus.HistogramVec
+	StmtCacheSize     prometheus.Gauge
+	QueueDepth        *prometheus.GaugeVec
+	DLQPushed         *prometheus.CounterVec
+	WSConnections     prometheus.Gauge
+	WSMessagesTotal   *prometheus.CounterVec
+	PATAuths          *prometheus.CounterVec
+	WebhookDeliveries *prometheus.CounterVec
 }
 
 // New constructs a registered Metrics instance. Repeated calls would
@@ -124,6 +126,24 @@ func New() *Metrics {
 			},
 			[]string{"direction", "topic_prefix"},
 		),
+		PATAuths: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "mycloud",
+				Subsystem: "auth",
+				Name:      "pat_total",
+				Help:      "Personal access token authentication attempts, partitioned by result (ok/expired/revoked/invalid).",
+			},
+			[]string{"result"},
+		),
+		WebhookDeliveries: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "mycloud",
+				Subsystem: "webhook",
+				Name:      "deliveries_total",
+				Help:      "Outbound webhook delivery outcomes, partitioned by status (success/failed/retry).",
+			},
+			[]string{"status"},
+		),
 	}
 	reg.MustRegister(
 		m.RequestsTotal,
@@ -134,8 +154,27 @@ func New() *Metrics {
 		m.DLQPushed,
 		m.WSConnections,
 		m.WSMessagesTotal,
+		m.PATAuths,
+		m.WebhookDeliveries,
 	)
 	return m
+}
+
+// IncPATAuth records one PAT authentication outcome. Nil-receiver-safe.
+func (m *Metrics) IncPATAuth(result string) {
+	if m == nil {
+		return
+	}
+	m.PATAuths.WithLabelValues(result).Inc()
+}
+
+// IncWebhookDelivery records one webhook delivery outcome
+// (success/failed/retry). Nil-receiver-safe.
+func (m *Metrics) IncWebhookDelivery(status string) {
+	if m == nil {
+		return
+	}
+	m.WebhookDeliveries.WithLabelValues(status).Inc()
 }
 
 // ObserveHTTPRequest is the canonical shorthand for the access-log

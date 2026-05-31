@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Plain window theme used after the splash; the real UI theme is the
+         Compose MyCloudTheme. NoActionBar because this is a Compose app. -->
+    <style name="Theme.MyCloud" parent="@android:style/Theme.Material.Light.NoActionBar" />
+
+    <!-- Launch theme (androidx core-splashscreen). Hands off to Theme.MyCloud. -->
+    <style name="Theme.MyCloud.Starter" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/brand</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.MyCloud</item>
+    </style>
+</resources>

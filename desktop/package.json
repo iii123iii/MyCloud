@@ -26,6 +26,9 @@
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "include": "installer.nsh"
     }
   },
   "dependencies": {

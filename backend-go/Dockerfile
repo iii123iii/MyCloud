@@ -11,6 +11,10 @@ WORKDIR /src
 COPY . .
 
 RUN set -eu; \
+    # The repo is COPYed in as root; git refuses to read a repo it considers
+    # "dubiously owned" and exits 128, which would silently drop the version
+    # fallback below to "dev". Trust the build tree so `git describe` works.
+    git config --global --add safe.directory '*' 2>/dev/null || true; \
     version="${MYCLOUD_VERSION:-}"; \
     if [ -z "$version" ]; then \
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
@@ -27,7 +31,11 @@ RUN set -eu; \
     printf '%s' "$version" >/tmp/mycloud-version
 
 WORKDIR /src/backend-go
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/mycloud_backend ./cmd/api
+# -buildvcs=false: the app version comes from /etc/mycloud/version (set above),
+# not Go's VCS stamping, so don't make the build depend on git being able to
+# read the copied .git (it can't reliably in-container → "error obtaining VCS
+# status: exit status 128").
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/mycloud_backend ./cmd/api
 
 FROM debian:bookworm-slim
 

@@ -205,27 +205,41 @@ func (a *App) copyFolderInto(ctx context.Context, copierID, srcFolderID, destPar
 	for oldID := range nodes {
 		newID[oldID] = uuid.NewString()
 	}
+	// Insert folders PARENTS-FIRST. The self-referencing FK (fk_folders_parent)
+	// rejects a child whose new parent_id doesn't exist yet, and Go map iteration
+	// order is randomised — iterating `nodes` directly inserts children before
+	// parents intermittently, causing a non-deterministic FK-violation 500. Walk
+	// the subtree breadth-first from the root so every parent is inserted first.
+	childrenOf := make(map[string][]string, len(nodes))
 	for oldID, n := range nodes {
-		var parent any
-		if oldID == srcFolderID {
-			parent = nullableString(destParentID) // graft the root under the destination
-		} else if n.parent.Valid {
-			parent = newID[n.parent.String]
+		if oldID != srcFolderID && n.parent.Valid {
+			childrenOf[n.parent.String] = append(childrenOf[n.parent.String], oldID)
 		}
+	}
+	queue := []string{srcFolderID}
+	for len(queue) > 0 {
+		oldID := queue[0]
+		queue = queue[1:]
+		n := nodes[oldID]
+		var parent any
 		name := n.name
 		if oldID == srcFolderID {
+			parent = nullableString(destParentID) // graft the root under the destination
 			// Only the visible root needs collision-proofing against the dest.
 			cn, err := a.copyFolderName(ctx, tx, destOwnerID, destParentID, name)
 			if err != nil {
 				return "", err
 			}
 			name = cn
+		} else if n.parent.Valid {
+			parent = newID[n.parent.String] // already inserted (BFS guarantees parent-first)
 		}
 		if _, err := tx.ExecContext(ctx,
 			"INSERT INTO folders (id, name, user_id, parent_id, is_deleted) VALUES (?, ?, ?, ?, 0)",
 			newID[oldID], name, destOwnerID, parent); err != nil {
 			return "", err
 		}
+		queue = append(queue, childrenOf[oldID]...)
 	}
 	for _, f := range files {
 		dest := newID[f.folderID]

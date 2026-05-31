@@ -9,10 +9,17 @@ export interface User {
   role: string;
 }
 
+/** How the current session authenticates. "token" = a Personal Access Token. */
+export type AuthMode = "password" | "token";
+
 export interface AuthState {
   accessToken: string;
   refreshToken: string;
   user: User | null;
+  /** Defaults to "password" for back-compat with pre-token state files. */
+  mode: AuthMode;
+  /** Scopes of the signed-in PAT (token mode only); empty for password sessions. */
+  scopes?: string[];
 }
 
 export interface SyncProgress {
@@ -85,6 +92,12 @@ export interface LoginPayload {
   apiBaseUrl: string;
   email: string;
   password: string;
+  allowSelfSignedTls: boolean;
+}
+
+export interface TokenSignInPayload {
+  apiBaseUrl: string;
+  token: string;
   allowSelfSignedTls: boolean;
 }
 

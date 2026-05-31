@@ -112,11 +112,11 @@ func parseUserDatetime(s *string) (*time.Time, error) {
 		return nil, nil
 	}
 	layouts := []string{
-		time.RFC3339Nano,           // 2026-05-27T14:46:49.577Z
-		time.RFC3339,               // 2026-05-27T14:46:49Z
-		"2006-01-02T15:04:05",      // local-time variant without zone
-		"2006-01-02 15:04:05",      // MySQL DATETIME
-		"2006-01-02",               // date-only
+		time.RFC3339Nano,      // 2026-05-27T14:46:49.577Z
+		time.RFC3339,          // 2026-05-27T14:46:49Z
+		"2006-01-02T15:04:05", // local-time variant without zone
+		"2006-01-02 15:04:05", // MySQL DATETIME
+		"2006-01-02",          // date-only
 	}
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, v); err == nil {
@@ -219,6 +219,12 @@ func boolSetting(raw string) bool {
 }
 
 func writeActivity(ctx context.Context, q querier, userID *string, action, resourceType, resourceID, ip string, details interface{}) {
+	// Attribute PAT-driven mutations to the specific token so the activity log
+	// can answer "what has this token been doing?". No-op (and zero overhead)
+	// for interactive JWT sessions, which carry no patID in ctx.
+	if patID, ok := patIDFrom(ctx); ok {
+		details = mergePATID(details, patID)
+	}
 	payload, _ := json.Marshal(details)
 	_, _ = q.ExecContext(ctx, `
 		INSERT INTO activity_log (user_id, action, resource_type, resource_id, details, ip_address)
@@ -253,6 +259,12 @@ func writeActivityWithDiff(
 	ctx context.Context, q querier, userID *string, action, resourceType, resourceID, ip, operationID string,
 	oldValue, newValue, details any,
 ) {
+	// Attribute PAT-driven mutations to the specific token, mirroring
+	// writeActivity — the diff path records reversible edits (file/folder
+	// updates) a token can perform, so it needs the same stamp.
+	if patID, ok := patIDFrom(ctx); ok {
+		details = mergePATID(details, patID)
+	}
 	detailsPayload, _ := json.Marshal(details)
 	oldPayload, _ := json.Marshal(oldValue)
 	newPayload, _ := json.Marshal(newValue)
@@ -270,6 +282,22 @@ func writeActivityWithDiff(
 		nullableString(operationID),
 		nullableString(ip),
 	)
+}
+
+// mergePATID returns a details value with "pat_id" added. It re-encodes the
+// original details into a generic object so it works regardless of the concrete
+// type the call site passed; a non-object payload is nested under "details".
+func mergePATID(details interface{}, patID string) interface{} {
+	m := map[string]any{}
+	if details != nil {
+		if raw, err := json.Marshal(details); err == nil {
+			if err := json.Unmarshal(raw, &m); err != nil {
+				m = map[string]any{"details": json.RawMessage(raw)}
+			}
+		}
+	}
+	m["pat_id"] = patID
+	return m
 }
 
 func nullableString(s string) interface{} {

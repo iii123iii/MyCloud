@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"mycloud/backend-go/internal/auth"
 	"mycloud/backend-go/internal/health"
 	"mycloud/backend-go/internal/httpapi"
 	"mycloud/backend-go/internal/logging"
@@ -122,14 +123,34 @@ func (a *App) routes() chi.Router {
 			// /auth/me, /auth/change-password, and /auth/logout remain
 			// reachable so users can clear the flag.
 			authed.Use(a.requirePasswordCurrent)
+			// requireScope is a no-op for interactive JWT sessions; for
+			// Personal Access Tokens it enforces the per-route scope and the
+			// PAT-blocked routes. Placed after auth so the PAT context exists.
+			authed.Use(a.requireScope)
 			// genericLimit applies globally to authenticated endpoints so a
 			// single user can't pin the backend with API spam. Heavier
 			// limiters (download, search) below opt in to tighter buckets.
 			authed.Use(genericLimit)
 			authed.Get("/auth/me", a.handleMe)
+			// Token/identity introspection — scope-exempt so any PAT can verify
+			// itself and read its own scopes (used by the desktop/CLI sign-in).
+			authed.Get("/auth/whoami", a.handleWhoami)
 			// Per-device sessions.
 			authed.Get("/me/sessions", a.handleListMySessions)
 			authed.Delete("/me/sessions/{jti}", a.handleRevokeMySession)
+			// Personal access tokens for API/automation auth.
+			authed.Get("/me/tokens", a.handleListMyTokens)
+			authed.Post("/me/tokens", a.handleCreateMyToken)
+			authed.Patch("/me/tokens/{id}", a.handleRenameMyToken)
+			authed.Delete("/me/tokens/{id}", a.handleRevokeMyToken)
+			// Per-user outbound webhooks.
+			authed.Get("/me/webhooks", a.handleListMyWebhooks)
+			authed.Post("/me/webhooks", a.handleCreateMyWebhook)
+			authed.Patch("/me/webhooks/{id}", a.handleUpdateMyWebhook)
+			authed.Delete("/me/webhooks/{id}", a.handleDeleteMyWebhook)
+			authed.Get("/me/webhooks/{id}/deliveries", a.handleListWebhookDeliveries)
+			authed.Post("/me/webhooks/{id}:test", a.handleTestMyWebhook)
+			authed.Post("/me/webhooks/{id}:rotate-secret", a.handleRotateMyWebhookSecret)
 			// Favourites pinned in the sidebar.
 			authed.Get("/me/favorites", a.handleListFavorites)
 			authed.Post("/me/favorites", a.handleAddFavorite)
@@ -477,7 +498,15 @@ func (a *App) requireAuth(next http.Handler) http.Handler {
 			httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Missing bearer token")
 			return
 		}
-		claims, err := a.Auth.Parse(strings.TrimPrefix(authHeader, "Bearer "))
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		// Personal Access Tokens take an entirely separate validation path
+		// (DB-backed, scope-bearing). They share the Bearer header but are
+		// disambiguated by their "mc_pat_" prefix — JWTs never start with it.
+		if auth.IsPATToken(token) {
+			a.authenticatePAT(w, r, next, token)
+			return
+		}
+		claims, err := a.Auth.Parse(token)
 		if err != nil || claims.Type != "access" {
 			httpapi.Error(w, http.StatusUnauthorized, "unauthorized", "Invalid token")
 			return

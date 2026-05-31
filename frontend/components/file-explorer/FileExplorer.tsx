@@ -7,7 +7,7 @@ import useSWRInfinite from "swr/infinite";
 import { useDropzone } from "react-dropzone";
 import { LayoutGrid, List, Upload, FolderPlus, Search, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 
-import { auth as authApi, files as filesApi, folders as foldersApi } from "@/lib/api";
+import { auth as authApi, files as filesApi, folders as foldersApi, search as searchApi } from "@/lib/api";
 import { useTopic } from "@/components/ws-provider";
 import { collectDroppedFiles, planDroppedTree, type DroppedFile } from "@/lib/folder-drop";
 import { cn } from "@/lib/utils";
@@ -32,7 +32,7 @@ import { NewFolderDialog } from "@/components/modals/NewFolderDialog";
 import { PreviewModal } from "@/components/modals/PreviewModal";
 import { EditFileDialog } from "@/components/modals/EditFileDialog";
 import { getEditMode } from "@/lib/file-kind";
-import type { FileItem, FolderItem } from "@/lib/types";
+import type { FileItem, FolderItem, SearchResult } from "@/lib/types";
 
 const PAGE_SIZE = 60;
 
@@ -56,6 +56,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
   const [folderPath, setFolderPath]   = useState<FolderItem[]>([]);
   const [viewMode, setViewMode]       = useState<"grid" | "list">("grid");
   const [searchQ, setSearchQ]         = useState("");
+  const [debouncedSearchQ, setDebouncedSearchQ] = useState("");
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [editFile, setEditFile]       = useState<FileItem | null>(null);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -225,6 +226,66 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
   const totalFiles  = filePages?.[0]?.total ?? 0;
   const folderList  = foldersData?.folders ?? [];
 
+  // ── Backend search ─────────────────────────────────────────────────────
+  // The search bar now hits the same /api/v2/search engine ⌘K uses, so it
+  // finds matches anywhere (not just the loaded page) and the DSL hints
+  // (name:, tag:, size:>…) actually work. Scope is context-aware: global at
+  // My Files, the current folder's subtree when inside one. The shared browser
+  // keeps the client-side filter below (backend search is owner-scoped and
+  // can't see shared-with-me items), so search stays disabled there.
+  useEffect(() => {
+    if (searchQ.trim() === "") {
+      setDebouncedSearchQ("");
+      return;
+    }
+    const t = setTimeout(() => setDebouncedSearchQ(searchQ.trim()), 200);
+    return () => clearTimeout(t);
+  }, [searchQ]);
+
+  const searchActive = !sharedRoot && debouncedSearchQ !== "";
+  const { data: searchData, isLoading: searchLoading } = useSWR(
+    searchActive ? ["explorer-search", debouncedSearchQ, folderId ?? "root"] : null,
+    () => searchApi.query(debouncedSearchQ, "both", folderId),
+    { keepPreviousData: true, revalidateOnFocus: false },
+  );
+
+  // Map search hits onto the FileItem/FolderItem shapes the grid/list/preview
+  // already render. Fields a SearchResult lacks (folder_id, shared,
+  // is_favorited, …) get safe defaults: search is owner-scoped so `shared` is
+  // always false, and PreviewModal only needs id/name/mime_type/size_bytes.
+  const { resultFiles, resultFolders } = useMemo(() => {
+    const rf: FileItem[] = [];
+    const rfo: FolderItem[] = [];
+    const results: SearchResult[] = searchData?.results ?? [];
+    for (const res of results) {
+      if (res.type === "folder") {
+        rfo.push({
+          id: res.id,
+          name: res.name,
+          parent_id: undefined,
+          created_at: res.updated_at,
+          updated_at: res.updated_at,
+          is_favorited: false,
+          shared: false,
+        });
+      } else {
+        rf.push({
+          id: res.id,
+          name: res.name,
+          size_bytes: res.size_bytes ?? 0,
+          mime_type: res.mime_type ?? "application/octet-stream",
+          folder_id: undefined,
+          is_starred: res.is_starred ?? false,
+          is_deleted: false,
+          created_at: res.updated_at,
+          updated_at: res.updated_at,
+          shared: false,
+        });
+      }
+    }
+    return { resultFiles: rf, resultFolders: rfo };
+  }, [searchData]);
+
   // Effective permission for the folder currently in view (the deepest crumb
   // carries it for shared paths). Outside a shared context writes are always
   // allowed; inside one, only editor/owner grants may mutate. Until the path
@@ -278,6 +339,13 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
       // move / delete of a favourited folder shows up immediately in the
       // sidebar instead of waiting for the next refocus.
       globalMutate("favorites");
+      // Active explorer search is its own SWR cache — invalidate it too so a
+      // move / delete / star performed on a search result reflects at once.
+      globalMutate(
+        (key) => Array.isArray(key) && key[0] === "explorer-search",
+        undefined,
+        { revalidate: true },
+      );
     },
     [folderId, mutateFiles, mutateFolders, globalMutate],
   );
@@ -389,9 +457,9 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
   }, []);
 
   useEffect(() => {
-    if (!isLoadMoreVisible || !hasMore || filesLoading) return;
+    if (searchActive || !isLoadMoreVisible || !hasMore || filesLoading) return;
     setFilePageCount((size) => size + 1);
-  }, [filesLoading, hasMore, isLoadMoreVisible, setFilePageCount]);
+  }, [searchActive, filesLoading, hasMore, isLoadMoreVisible, setFilePageCount]);
 
   // Reset pagination when folder changes
   useEffect(() => {
@@ -520,6 +588,20 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
     setSearchQ("");
   };
 
+  // Navigate to a folder by id without assuming it's a child of the current
+  // view — search results can point anywhere in the drive. We deliberately do
+  // NOT stamp syncedFolderIdRef, so the URL-reconcile effect rebuilds the full
+  // breadcrumb via foldersApi.path() instead of appending a single stray crumb.
+  const openFolderById = useCallback(
+    (id: string) => {
+      setSearchQ("");
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("folder", id);
+      router.push(`${basePath}?${params.toString()}`);
+    },
+    [searchParams, router, basePath],
+  );
+
   const navigateTo = (index: number) => {
     if (index < 0) {
       // In a shared context the "home" crumb returns to /shared (the share
@@ -554,6 +636,19 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
     () => (lowerQ ? folderList.filter((f) => f.name.toLowerCase().includes(lowerQ)) : folderList),
     [folderList, lowerQ]
   );
+
+  // What the content area renders: backend search results when a search is
+  // active, otherwise the (client-filtered) folder listing.
+  const showFiles = searchActive ? resultFiles : filtered;
+  const showFolders = searchActive ? resultFolders : filteredFolders;
+  const searchEmpty =
+    searchActive && !searchLoading && resultFiles.length === 0 && resultFolders.length === 0;
+  // First-load skeleton: the folder's initial fetch, or a fresh search with no
+  // results yet (keepPreviousData means a refining search shows stale hits, not
+  // a skeleton flash).
+  const showInitialSkeleton =
+    (!searchActive && filesLoading && !filesError && allFiles.length === 0) ||
+    (searchActive && searchLoading && resultFiles.length === 0 && resultFolders.length === 0);
 
   // Surface the dragging state as a body attribute so the global CSS in
   // globals.css can paint a full-window drop affordance — covers the rare
@@ -601,10 +696,19 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
             {/* Left cluster: breadcrumb + counts */}
             <div className="flex items-center gap-2 min-w-0 flex-1 sm:flex-initial">
               <BreadcrumbNav path={folderPath} onNavigate={navigateTo} rootCrumb={rootCrumb} />
-              {totalFiles > 0 && (
-                <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                  {totalFiles.toLocaleString()} file{totalFiles !== 1 ? "s" : ""}
-                </span>
+              {searchActive ? (
+                !searchLoading && resultFiles.length + resultFolders.length > 0 && (
+                  <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                    {resultFiles.length + resultFolders.length} result
+                    {resultFiles.length + resultFolders.length !== 1 ? "s" : ""}
+                  </span>
+                )
+              ) : (
+                totalFiles > 0 && (
+                  <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                    {totalFiles.toLocaleString()} file{totalFiles !== 1 ? "s" : ""}
+                  </span>
+                )
               )}
               <span
                 role="status"
@@ -632,10 +736,14 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
                   ref={searchInputRef}
                   className="pl-8 pr-12 w-full sm:w-64 transition-shadow"
                   // Hint: surface DSL syntax so users discover field operators.
-                  placeholder="Search (name:*.pdf, tag:work)"
+                  placeholder={sharedRoot ? "Filter by name" : "Search (name:*.pdf, tag:work)"}
                   value={searchQ}
                   onChange={(e) => setSearchQ(e.target.value)}
-                  title="Filter the current folder. Tip: prefix with name:, mime:, tag:, size:>1mb, after:YYYY-MM-DD, owner:me, starred:true. (Press / to focus)"
+                  title={
+                    sharedRoot
+                      ? "Filter these items by name. (Press / to focus)"
+                      : "Search names + contents. At My Files searches everywhere; inside a folder searches that folder and its subfolders. Operators: name:, mime:, tag:, size:>1mb, after:YYYY-MM-DD, owner:me, starred:true. (Press / to focus)"
+                  }
                   aria-label="Search files"
                   aria-keyshortcuts="/ Control+F Meta+F"
                   type="search"
@@ -648,7 +756,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
                 </kbd>
               </div>
 
-              <Separator orientation="vertical" className="h-6 hidden sm:block" />
+              <Separator orientation="vertical" className="hidden sm:block" />
 
               {/* Segmented view-mode control. Joined toggles with shared
                   border so they read as a single unit, not two siblings. */}
@@ -759,7 +867,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
       </TooltipProvider>
 
       {/* Error state — surfaces SWR failure with a retry affordance. */}
-      {filesError && allFiles.length === 0 && !filesLoading && (
+      {!searchActive && filesError && allFiles.length === 0 && !filesLoading && (
         <Alert variant="destructive" className="mb-4">
           <AlertCircle aria-hidden="true" />
           <AlertTitle>Couldn&apos;t load files</AlertTitle>
@@ -785,7 +893,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
 
       {/* Initial loading skeleton — shape mirrors the active view mode so
           there's minimal layout shift when real data lands. */}
-      {filesLoading && !filesError && allFiles.length === 0 ? (
+      {showInitialSkeleton ? (
         <div
           role="status"
           aria-busy="true"
@@ -819,7 +927,17 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
             </div>
           )}
         </div>
-      ) : !filesError ? (
+      ) : searchEmpty ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="py-16 text-center text-sm text-muted-foreground animate-in fade-in duration-200"
+        >
+          No results for{" "}
+          <span className="font-medium text-foreground">&ldquo;{debouncedSearchQ}&rdquo;</span>
+          {folderId ? " in this folder." : "."}
+        </div>
+      ) : searchActive || !filesError ? (
         <div
           // Smooth crossfade when toggling between grid and list views.
           key={viewMode}
@@ -830,9 +948,9 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
               doesn't accept folder ids in the file_ids array). */}
           <ContentWithSelection
             viewMode={viewMode}
-            files={filtered}
-            folders={filteredFolders}
-            onOpenFolder={openFolder}
+            files={showFiles}
+            folders={showFolders}
+            onOpenFolder={searchActive ? (f) => openFolderById(f.id) : openFolder}
             onPreview={setPreviewFile}
             onMutate={refreshAfterMutation}
             onUploadClick={openFileDialog}
@@ -843,7 +961,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
       ) : null}
 
       {/* Infinite scroll trigger */}
-      {hasMore && (
+      {!searchActive && hasMore && (
         <div ref={loadMoreRef} className="flex justify-center py-6">
           {filesLoading ? (
             <Loader2
@@ -875,7 +993,7 @@ export function FileExplorer({ basePath = "/dashboard", rootCrumb, sharedRoot = 
       {previewFile && (
         <PreviewModal
           file={previewFile}
-          files={filtered}
+          files={showFiles}
           open={!!previewFile}
           onOpenChange={(o) => !o && setPreviewFile(null)}
           onNavigate={setPreviewFile}

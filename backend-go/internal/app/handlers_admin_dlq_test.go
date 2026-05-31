@@ -54,8 +54,8 @@ func TestDLQList_EmptyQueues(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if len(resp.Data.DLQ) != 3 {
-		t.Errorf("expected 3 queues (thumb/extract/hls), got %d", len(resp.Data.DLQ))
+	if len(resp.Data.DLQ) != len(dlqQueues) {
+		t.Errorf("expected %d queues (thumb/extract/hls/webhook), got %d", len(dlqQueues), len(resp.Data.DLQ))
 	}
 	for _, q := range resp.Data.DLQ {
 		if q.Depth != 0 {

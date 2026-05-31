@@ -64,14 +64,31 @@
               <span>Server URL</span>
               <input id="apiBaseUrl" name="apiBaseUrl" type="url" placeholder="https://cloud.example.com" required />
             </label>
-            <label class="field-label">
-              <span>Email or Username</span>
-              <input id="email" name="email" type="text" placeholder="you@example.com" required autocomplete="username" />
-            </label>
-            <label class="field-label">
-              <span>Password</span>
-              <input id="password" name="password" type="password" required autocomplete="current-password" />
-            </label>
+
+            <div class="mode-toggle" role="tablist" aria-label="Sign-in method">
+              <button type="button" class="mode-btn active" id="mode-password" role="tab" aria-selected="true">Password</button>
+              <button type="button" class="mode-btn" id="mode-token" role="tab" aria-selected="false">Access token</button>
+            </div>
+
+            <div id="password-fields" class="field-group">
+              <label class="field-label">
+                <span>Email or Username</span>
+                <input id="email" name="email" type="text" placeholder="you@example.com" autocomplete="username" />
+              </label>
+              <label class="field-label">
+                <span>Password</span>
+                <input id="password" name="password" type="password" autocomplete="current-password" />
+              </label>
+            </div>
+
+            <div id="token-fields" class="field-group is-hidden">
+              <label class="field-label">
+                <span>Access token</span>
+                <input id="token" name="token" type="password" placeholder="mc_pat_…" autocomplete="off" />
+              </label>
+              <button type="button" id="create-token-link" class="link-btn">Create a token in MyCloud →</button>
+            </div>
+
             <label class="checkbox-row">
               <input id="allowSelfSignedTls" name="allowSelfSignedTls" type="checkbox" />
               <span>Allow self-signed TLS</span>
@@ -87,8 +104,8 @@
         <div class="settings-inner">
           <div class="account-card">
             <div class="account-badge">
-              <span class="account-dot"></span>
-              <span>Connected</span>
+              <span id="account-dot" class="account-dot"></span>
+              <span id="account-status-label">Connected</span>
             </div>
             <p id="account-username" class="account-name">-</p>
             <p id="account-email" class="account-meta">-</p>

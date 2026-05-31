@@ -1,9 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
+import { app } from "electron";
 import * as tus from "tus-js-client";
 import { Agent } from "undici";
 import type { StateStore } from "./store";
-import type { LoginPayload, RemoteEntity, StorageStats, User } from "./types";
+import type { LoginPayload, RemoteEntity, StorageStats, TokenSignInPayload, User } from "./types";
+
+/** Identifies desktop traffic in the backend access log + a token's last-used view. */
+function desktopUserAgent(): string {
+  try {
+    return `MyCloud-Desktop/${app.getVersion()}`;
+  } catch {
+    return "MyCloud-Desktop";
+  }
+}
+
+/** Shape of GET /api/v2/auth/whoami (identity + the token's scopes). */
+interface WhoamiResponse {
+  id: string;
+  username: string;
+  email: string;
+  role: string;
+  auth: string;
+  scopes?: string[];
+}
 
 /* ------------------------------------------------------------------ */
 /*  Undici agent for self-signed TLS certs                            */
@@ -12,6 +32,15 @@ import type { LoginPayload, RemoteEntity, StorageStats, User } from "./types";
 const insecureDispatcher = new Agent({
   connect: { rejectUnauthorized: false },
 });
+
+// tus-js-client uses Node's https.request directly (not undici/fetch), so the
+// insecureDispatcher above doesn't apply to uploads. We build a parallel pair
+// of httpStacks for tus and choose between them per upload based on the user's
+// "Allow self-signed TLS" preference. The stack's constructor options are
+// merged straight into https.request, which accepts rejectUnauthorized as a
+// standard TLS option.
+const defaultTusHttpStack = new tus.DefaultHttpStack({});
+const insecureTusHttpStack = new tus.DefaultHttpStack({ rejectUnauthorized: false });
 
 /* ------------------------------------------------------------------ */
 /*  ApiError — carries HTTP status so callers can inspect it          */
@@ -86,6 +115,9 @@ export class ApiClient {
     const { noAuth, retry = true, headers = {}, _attempt = 0, ...rest } = options;
     const mergedHeaders: Record<string, string> = { ...headers };
 
+    if (!mergedHeaders["User-Agent"]) {
+      mergedHeaders["User-Agent"] = desktopUserAgent();
+    }
     if (!noAuth && this.accessToken) {
       mergedHeaders.Authorization = `Bearer ${this.accessToken}`;
     }
@@ -130,6 +162,25 @@ export class ApiClient {
       if (refreshed) {
         return this.request<T>(urlPath, { ...options, retry: false });
       }
+    }
+
+    // In token (PAT) mode there is no refresh token — a 401 means the token was
+    // revoked or expired. Drop the credential so the renderer returns to the
+    // sign-in screen (it shows the login view whenever auth.user is null).
+    if (
+      response.status === 401 &&
+      !noAuth &&
+      this.store.getState().auth.mode === "token"
+    ) {
+      this.store.update((state) => {
+        state.auth.accessToken = "";
+        state.auth.user = null;
+        state.auth.scopes = [];
+      });
+      this.store.pushEvent({
+        level: "error",
+        message: "Access token is invalid or was revoked. Please reconnect.",
+      });
     }
 
     // Retry on 5xx server errors
@@ -208,20 +259,71 @@ export class ApiClient {
     });
 
     this.store.update((state) => {
+      state.auth.mode = "password";
       state.auth.accessToken = tokens!.access_token;
       state.auth.refreshToken = tokens!.refresh_token;
       state.auth.user = me!;
+      state.auth.scopes = [];
       return state;
     });
 
     return me!;
   }
 
+  /**
+   * Sign in with a Personal Access Token (mc_pat_…). Validates the token and
+   * fetches the identity via the scope-exempt /auth/whoami endpoint (so the
+   * token needs only files:read+files:write, not account:read), then stores it
+   * as the bearer with no refresh token. Warns when the token can't write.
+   */
+  async loginWithToken(payload: TokenSignInPayload): Promise<User> {
+    this.store.update((state) => {
+      state.apiBaseUrl = payload.apiBaseUrl.replace(/\/+$/, "");
+      state.allowSelfSignedTls = Boolean(payload.allowSelfSignedTls);
+      return state;
+    });
+
+    const token = payload.token.trim();
+    let who: WhoamiResponse | null;
+    try {
+      who = await this.request<WhoamiResponse>("/api/v2/auth/whoami", {
+        headers: { Authorization: `Bearer ${token}` },
+        noAuth: true,
+      });
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 401) {
+        throw new ApiError("Invalid or revoked token", 401);
+      }
+      throw error;
+    }
+    if (!who) throw new ApiError("Token validation failed", 0);
+
+    const scopes = who.scopes ?? [];
+    this.store.update((state) => {
+      state.auth.mode = "token";
+      state.auth.accessToken = token;
+      state.auth.refreshToken = "";
+      state.auth.user = { id: who!.id, username: who!.username, email: who!.email, role: who!.role };
+      state.auth.scopes = scopes;
+      return state;
+    });
+
+    if (!scopes.includes("*") && !scopes.includes("files:write")) {
+      this.store.pushEvent({
+        level: "info",
+        message: "This token is read-only (no files:write) — uploads and deletes will fail.",
+      });
+    }
+    return this.store.getState().auth.user!;
+  }
+
   logout(): void {
     this.store.update((state) => {
+      state.auth.mode = "password";
       state.auth.accessToken = "";
       state.auth.refreshToken = "";
       state.auth.user = null;
+      state.auth.scopes = [];
       state.syncStatus.state = "idle";
       state.syncStatus.message = "Signed out";
       state.syncStatus.progress = null;
@@ -277,12 +379,17 @@ export class ApiClient {
         retryDelays: [0, 1000, 3000, 5000, 10000],
         chunkSize: 8 * 1024 * 1024,
         uploadSize: stats.size,
+        // Self-signed TLS only matters here — tus doesn't go through undici.
+        httpStack: this.allowSelfSignedTls ? insecureTusHttpStack : defaultTusHttpStack,
         metadata: {
           filename: fileName,
           filetype: "application/octet-stream",
           folder_id: folderId ?? "",
         },
-        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        headers: {
+          "User-Agent": desktopUserAgent(),
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         onAfterResponse: async (req, res) => {
           const url = (upload as unknown as { url?: string }).url;
           if (url && req.getMethod() === "POST" && options?.onResumeUrl) {
@@ -329,6 +436,26 @@ export class ApiClient {
       if (error instanceof ApiError && error.status === 404) return;
       throw error;
     }
+  }
+
+  /**
+   * Rename and/or move a remote folder. Used by the sync engine when it
+   * detects a local folder rename (matching child fingerprint across an
+   * unlinkDir/addDir pair) — preserves the remote folder ID and every
+   * descendant's IDs / comments / grants / versions, in contrast to the
+   * delete-and-recreate path. `parentId` undefined ⇒ keep current parent.
+   */
+  async renameFolder(
+    id: string,
+    name: string,
+    parentId?: string | null,
+  ): Promise<void> {
+    const body: Record<string, unknown> = { name };
+    if (parentId !== undefined) body.parent_id = parentId;
+    await this.request(`/api/v2/folders/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
   }
 
   /* ---- storage stats -------------------------------------------- */

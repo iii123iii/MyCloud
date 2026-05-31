@@ -15,7 +15,7 @@ import {
 import { StateStore } from "./lib/store";
 import { ApiClient } from "./lib/api";
 import { SyncEngine } from "./lib/sync-engine";
-import type { AppState, LoginPayload } from "./lib/types";
+import type { AppState, LoginPayload, TokenSignInPayload } from "./lib/types";
 
 /* ------------------------------------------------------------------ */
 /*  Module-level state                                                 */
@@ -298,6 +298,18 @@ async function bootstrap(): Promise<void> {
     return store.getState();
   });
 
+  ipcHandle("auth:signInWithToken", async (_event, ...args) => {
+    const payload = args[0] as TokenSignInPayload;
+    const user = await api.loginWithToken(payload);
+    syncEngine.start();
+    store.pushEvent({ level: "success", message: `Signed in as ${user.username}` });
+    emitState();
+    void api.getStorageStats().then((s) => {
+      if (s) { store.update((st) => { st.storageStats = s; }); emitState(); }
+    });
+    return store.getState();
+  });
+
   ipcHandle("auth:logout", async () => {
     syncEngine.stopAllWatchers();
     api.logout();
@@ -372,6 +384,16 @@ async function bootstrap(): Promise<void> {
   ipcHandle("app:open-web", async () => {
     const base = (store.getState().apiBaseUrl || "http://localhost:8080").replace(/\/+$/, "");
     await shell.openExternal(base);
+    return true;
+  });
+
+  // Deep-link to the web app's token-creation page so users can mint a PAT for
+  // desktop sign-in. Uses the URL typed into the login form when not yet
+  // connected, falling back to the stored base.
+  ipcHandle("app:open-token-settings", async (_event, ...args) => {
+    const typed = (args[0] as string | undefined) || store.getState().apiBaseUrl || "http://localhost:8080";
+    const base = typed.replace(/\/+$/, "");
+    await shell.openExternal(`${base}/settings/developer`);
     return true;
   });
 

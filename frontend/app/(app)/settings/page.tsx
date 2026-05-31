@@ -13,6 +13,7 @@ import {
   KeyRound,
   Loader2,
   Activity as ActivityIcon,
+  Code2,
   ShieldAlert,
   Settings,
   Smartphone,
@@ -31,6 +32,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
 import { SessionsView } from "./sessions/page";
+import { DeveloperView } from "./developer/page";
+import { SectionHeader } from "@/components/settings/SectionHeader";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -72,6 +75,7 @@ const TAB_ITEMS = [
   { value: "password", label: "Password", icon: KeyRound },
   { value: "activity", label: "Activity", icon: ActivityIcon },
   { value: "sessions", label: "Sessions", icon: Smartphone },
+  { value: "developer", label: "Developer", icon: Code2 },
 ] as const;
 
 export default function SettingsPage() {
@@ -383,6 +387,11 @@ export default function SettingsPage() {
             <SessionsView />
           </TabsContent>
 
+          {/* ─── Developer ─── */}
+          <TabsContent value="developer" className="space-y-6 mt-0">
+            <DeveloperView />
+          </TabsContent>
+
           {/* ─── Activity ─── */}
           <TabsContent value="activity" className="space-y-6 mt-0">
             <SectionHeader
@@ -532,15 +541,6 @@ export default function SettingsPage() {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
-
-function SectionHeader({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="space-y-0.5">
-      <h2 className="text-lg font-semibold leading-tight tracking-tight">{title}</h2>
-      <p className="text-sm text-muted-foreground">{description}</p>
     </div>
   );
 }

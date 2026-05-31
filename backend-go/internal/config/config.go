@@ -10,11 +10,11 @@ import (
 )
 
 type Config struct {
-	ListenAddr          string
-	DBDSN               string
+	ListenAddr string
+	DBDSN      string
 	// DBReplicaDSN, when non-empty, enables read-replica routing via
 	// internal/db/cluster. Falls back to primary when empty.
-	DBReplicaDSN string
+	DBReplicaDSN        string
 	AllowedOrigins      []string
 	JWTSecret           string
 	AccessTokenTTL      int
@@ -64,6 +64,23 @@ type Config struct {
 	// addition to stdout. The admin log viewer reads this file. Empty disables
 	// the file sink. Defaults to /data/logs/app.jsonl alongside the update log.
 	LogFilePath string
+
+	// Personal Access Tokens.
+	PATMaxPerUser        int // cap on active (non-revoked) tokens per user
+	PATDefaultExpiryDays int // applied when a token is created without an explicit expiry; 0 = no default expiry
+
+	// Outbound webhooks.
+	// WebhookAllowPrivateTargets permits webhook URLs that resolve to
+	// loopback/RFC1918/link-local addresses. Off by default so a non-admin
+	// user can't turn a webhook into an SSRF pivot into the internal network;
+	// homelab operators flip it on to reach LAN services.
+	WebhookAllowPrivateTargets      bool
+	WebhookDeliveryTimeoutSecs      int
+	WebhookMaxPerUser               int
+	WebhookMaxAttempts              int
+	WebhookAutoDisableAfter         int // consecutive failures before a webhook is auto-disabled
+	WebhookSecretRotationGraceHours int
+	WebhookDeliveryConcurrency      int // concurrent q:webhook delivery workers; >1 stops one slow endpoint head-of-line blocking other users
 }
 
 func Load() (Config, error) {
@@ -98,7 +115,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:          envOrFile("LISTEN_ADDR", ":8080"),
+		ListenAddr: envOrFile("LISTEN_ADDR", ":8080"),
 		// clientFoundRows=true makes RowsAffected() return the number of rows
 		// that MATCHED the WHERE clause, not just those whose values actually
 		// changed. Without it, an UPDATE like `SET used_bytes = used_bytes + 0`
@@ -118,15 +135,15 @@ func Load() (Config, error) {
 		Version:             envOrFile("MYCLOUD_VERSION", "dev"),
 		GitHubRepo:          envOrFile("MYCLOUD_GITHUB_REPO", "iii123iii/MyCloud"),
 
-		RateLimitLoginPerMin:      envInt("RATE_LIMIT_LOGIN_PER_MIN", 10),
-		RateLimitLoginPerUserMin:  envInt("RATE_LIMIT_LOGIN_PER_USER_MIN", 5),
-		RateLimitRegisterPerHour:  envInt("RATE_LIMIT_REGISTER_PER_HOUR", 5),
-		RateLimitSharePwdPerMin:   envInt("RATE_LIMIT_SHARE_PWD_PER_MIN", 10),
-		RateLimitPublicUploadHour: envInt("RATE_LIMIT_PUBLIC_UPLOAD_PER_HOUR", 30),
-		RateLimitTusPerMin:        envInt("RATE_LIMIT_TUS_PER_MIN", 100),
-		RateLimitDownloadPerMin:   envInt("RATE_LIMIT_DOWNLOAD_PER_MIN", 240),
-		RateLimitSearchPerMin:     envInt("RATE_LIMIT_SEARCH_PER_MIN", 120),
-		RateLimitGenericPerMin:    envInt("RATE_LIMIT_GENERIC_PER_MIN", 600),
+		RateLimitLoginPerMin:      envInt("RATE_LIMIT_LOGIN_PER_MIN", 100),
+		RateLimitLoginPerUserMin:  envInt("RATE_LIMIT_LOGIN_PER_USER_MIN", 50),
+		RateLimitRegisterPerHour:  envInt("RATE_LIMIT_REGISTER_PER_HOUR", 50),
+		RateLimitSharePwdPerMin:   envInt("RATE_LIMIT_SHARE_PWD_PER_MIN", 100),
+		RateLimitPublicUploadHour: envInt("RATE_LIMIT_PUBLIC_UPLOAD_PER_HOUR", 3000),
+		RateLimitTusPerMin:        envInt("RATE_LIMIT_TUS_PER_MIN", 20000),
+		RateLimitDownloadPerMin:   envInt("RATE_LIMIT_DOWNLOAD_PER_MIN", 2400),
+		RateLimitSearchPerMin:     envInt("RATE_LIMIT_SEARCH_PER_MIN", 1200),
+		RateLimitGenericPerMin:    envInt("RATE_LIMIT_GENERIC_PER_MIN", 6000),
 
 		MaxVersionsPerFile: envInt("MAX_VERSIONS_PER_FILE", 10),
 
@@ -137,6 +154,17 @@ func Load() (Config, error) {
 		LogFormat:   envOrFile("LOG_FORMAT", "json"),
 		LogLevel:    envOrFile("LOG_LEVEL", "info"),
 		LogFilePath: envOrFile("LOG_FILE_PATH", "/data/logs/app.jsonl"),
+
+		PATMaxPerUser:        envInt("PAT_MAX_PER_USER", 20),
+		PATDefaultExpiryDays: envInt("PAT_DEFAULT_EXPIRY_DAYS", 0),
+
+		WebhookAllowPrivateTargets:      envBool("WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+		WebhookDeliveryTimeoutSecs:      envInt("WEBHOOK_DELIVERY_TIMEOUT_SECS", 10),
+		WebhookMaxPerUser:               envInt("WEBHOOK_MAX_PER_USER", 10),
+		WebhookMaxAttempts:              envInt("WEBHOOK_MAX_ATTEMPTS", 3),
+		WebhookAutoDisableAfter:         envInt("WEBHOOK_AUTO_DISABLE_AFTER", 15),
+		WebhookSecretRotationGraceHours: envInt("WEBHOOK_SECRET_ROTATION_GRACE_HOURS", 24),
+		WebhookDeliveryConcurrency:      envInt("WEBHOOK_DELIVERY_CONCURRENCY", 4),
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -196,6 +224,14 @@ func envInt(name string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envBool(name string, def bool) bool {
+	v := envOrFile(name, "")
+	if v == "" {
+		return def
+	}
+	return strings.EqualFold(v, "true") || v == "1"
 }
 
 func splitCSV(raw string) []string {

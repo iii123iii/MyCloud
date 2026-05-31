@@ -1,0 +1,52 @@
+# ── Gradle ──────────────────────────────────────────────────────────────────
+# NOTE: build/ and .gradle/ are intentionally NOT anchored with a leading "/"
+# so they match every module (app/build, core/*/build, feature/*/build, …),
+# not just the project-root build dir.
+.gradle/
+build/
+
+# ── Android Studio / IntelliJ IDEA ──────────────────────────────────────────
+*.iml
+*.ipr
+*.iws
+.idea/
+.navigation/
+captures/
+# Legacy AS exports
+freeline.py
+freeline/
+freeline_project_description.json
+
+# ── Kotlin (2.x build/session metadata) ─────────────────────────────────────
+.kotlin/
+
+# ── NDK / native build ──────────────────────────────────────────────────────
+.externalNativeBuild/
+.cxx/
+obj/
+
+# ── Local / machine-specific config ─────────────────────────────────────────
+local.properties
+
+# ── Build & packaging outputs (also covered by build/, kept for safety) ─────
+# Not ignoring *.aar / *.jar so the Gradle wrapper jar and any local libs stay tracked.
+*.apk
+*.aab
+*.ap_
+*.dex
+lint-report.*
+
+# ── Signing secrets — never commit (debug keystore is fine) ─────────────────
+*.jks
+*.keystore
+!debug.keystore
+keystore.properties
+signing.properties
+
+# ── Logs / crash dumps / profiling ──────────────────────────────────────────
+*.log
+*.hprof
+
+# ── OS cruft ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

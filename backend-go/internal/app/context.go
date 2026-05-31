@@ -17,6 +17,13 @@ const (
 	// loaded by requireAuth, so requirePasswordCurrent can gate routes
 	// without a second DB hit.
 	mustChangePwKey ctxKey = "userMustChangePw"
+	// patScopesKey carries the scopes of the authenticating Personal Access
+	// Token. Present ONLY on PAT-authenticated requests — its presence is how
+	// requireScope tells a PAT request from an interactive JWT session.
+	patScopesKey ctxKey = "patScopes"
+	// patIDKey carries the authenticating PAT's row id, so writeActivity can
+	// attribute mutations to the specific token ("what has this token done?").
+	patIDKey ctxKey = "patID"
 )
 
 // userIDHolder is a mutable slot the access-log middleware seeds at the top of
@@ -75,6 +82,31 @@ func userRoleFrom(r *http.Request) string {
 func jtiFrom(r *http.Request) string {
 	v, _ := r.Context().Value(userJTIKey).(string)
 	return v
+}
+
+// withPAT marks a request as authenticated by a Personal Access Token,
+// attaching its scopes and row id. Callers also call withUser to set the
+// user_id + role so every downstream handler behaves identically to a JWT
+// session — the PAT layer is purely an alternate front door.
+func withPAT(ctx context.Context, patID string, scopes []string) context.Context {
+	ctx = context.WithValue(ctx, patIDKey, patID)
+	ctx = context.WithValue(ctx, patScopesKey, scopes)
+	return ctx
+}
+
+// patScopesFrom returns the authenticating token's scopes and whether the
+// request was PAT-authenticated at all. The bool is the discriminator
+// requireScope uses: false ⇒ interactive JWT session ⇒ no scope restriction.
+func patScopesFrom(r *http.Request) ([]string, bool) {
+	v, ok := r.Context().Value(patScopesKey).([]string)
+	return v, ok
+}
+
+// patIDFrom returns the authenticating PAT's row id from ctx, if any. Read by
+// writeActivity to stamp mutations with the responsible token.
+func patIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(patIDKey).(string)
+	return v, ok && v != ""
 }
 
 // userIDHolderFrom returns the slot if present (the access-log middleware

@@ -117,6 +117,18 @@ func (a *App) handleAdminForceReset(w http.ResponseWriter, r *http.Request) {
 		respondDBError(w, r, err)
 		return
 	}
+	// A forced reset is a lock-down action, so also revoke the target's
+	// personal access tokens. PATs deliberately bypass the must_change_password
+	// gate (they're non-interactive credentials), so without this an admin
+	// resetting a possibly-compromised account would leave its API tokens fully
+	// usable. Tolerate the table being absent on a not-yet-migrated schema,
+	// mirroring the soft-attempt on must_change_password above.
+	if _, err := a.DB.ExecContext(r.Context(),
+		`UPDATE personal_access_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL`,
+		targetID); err != nil && !columnMissingError(err) && !contains(err.Error(), "doesn't exist") {
+		respondDBError(w, r, err)
+		return
+	}
 	writeActivity(r.Context(), a.DB, &adminID, "admin_force_password_reset", "user", targetID, clientIP(r), nil)
 	httpapi.JSON(w, http.StatusOK, map[string]any{"ok": true, "target_user_id": targetID}, nil)
 }

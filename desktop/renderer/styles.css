@@ -381,6 +381,43 @@ input, select { font: inherit; }
   flex-direction: column;
   gap: 10px;
 }
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mode-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.mode-btn {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.15s, color 0.15s;
+}
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.link-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--accent);
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
 .field-label {
   display: flex;
   flex-direction: column;
@@ -462,6 +499,12 @@ input, select { font: inherit; }
   height: 6px;
   border-radius: 50%;
   background: var(--green);
+}
+.account-dot.disconnected {
+  background: var(--text-muted);
+}
+.account-badge:has(.account-dot.disconnected) {
+  color: var(--text-muted);
 }
 .account-name {
   font-size: 15px;

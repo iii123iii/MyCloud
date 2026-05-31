@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand indigo (the web app's accent ~#5B47D6) — used for the splash and
+         launcher-icon background. The full Compose color scheme lives in
+         :core:designsystem. -->
+    <color name="brand">#FF5B47D6</color>
+    <color name="ic_launcher_background">#FF5B47D6</color>
+</resources>

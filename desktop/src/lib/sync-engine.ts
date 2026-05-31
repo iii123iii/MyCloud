@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { StateStore } from "./store";
+import { ApiError } from "./api";
 import type { ApiClient } from "./api";
 import type {
   AppState,
@@ -34,6 +35,11 @@ function parentRelativePath(relativePath: string): string {
 }
 
 function errorMessage(error: unknown): string {
+  // A 403 with a scope message means the signed-in PAT lacks a permission —
+  // point the user at where to fix it instead of a bare "Sync failed".
+  if (error instanceof ApiError && error.status === 403 && /scope/i.test(error.message)) {
+    return `${error.message} — recreate the access token with the required scope in MyCloud → Settings → Developer.`;
+  }
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -86,18 +92,37 @@ async function walkDirectory(rootPath: string): Promise<WalkResult> {
 /*  Concurrency limiter for parallel uploads                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Run `fn` over `items` with bounded concurrency. **Per-item failures are
+ * captured via `onError` and do NOT abort the rest of the batch.** This is the
+ * behavior a sync needs: one bad file (size, mime, transient 5xx, server
+ * rejection) shouldn't strand the other files in the same scan. Returns the
+ * number of items that failed so the caller can summarise.
+ *
+ * The previous implementation let any thrown error propagate up through
+ * `Promise.all`, which made the enqueue catch mark the whole sync `"error"`
+ * and stop after the first bad file — partial syncs looked indistinguishable
+ * from total failures.
+ */
 async function parallelMap<T>(
   items: T[],
   concurrency: number,
   fn: (item: T, index: number) => Promise<void>,
-): Promise<void> {
+  onError?: (item: T, error: unknown) => void,
+): Promise<number> {
   let idx = 0;
+  let failed = 0;
   const total = items.length;
 
   async function worker(): Promise<void> {
     while (idx < total) {
       const i = idx++;
-      await fn(items[i], i);
+      try {
+        await fn(items[i], i);
+      } catch (error: unknown) {
+        failed++;
+        if (onError) onError(items[i], error);
+      }
     }
   }
 
@@ -106,6 +131,7 @@ async function parallelMap<T>(
     workers.push(worker());
   }
   await Promise.all(workers);
+  return failed;
 }
 
 /* ------------------------------------------------------------------ */
@@ -123,6 +149,17 @@ const UPLOAD_CONCURRENCY = 6;
  * 5 000 individual queue items — they get coalesced instead.
  */
 const FS_EVENT_DEBOUNCE_MS = 500;
+
+/**
+ * How long (ms) we hold off on actually deleting a remote folder when its
+ * local copy disappears, in case the disappearance is one half of a
+ * rename / move and the matching addDir is about to arrive. If a matching
+ * addDir lands within this window, the folder is renamed in place
+ * (PATCH /folders/{id}) — preserving the remote folder ID and every
+ * descendant's IDs / comments / grants / versions. Otherwise the timer
+ * fires and performs the genuine delete.
+ */
+const FOLDER_RENAME_GRACE_MS = 5_000;
 
 /* ------------------------------------------------------------------ */
 /*  SyncEngine                                                         */
@@ -161,6 +198,16 @@ export class SyncEngine {
   private pendingFsEvents: PendingFsEvent[] = [];
   private fsEventTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Deferred dir-deletes awaiting a matching addDir for rename correlation.
+  // Keyed by `${rootId}::${oldRelPath}`. If a matching addDir lands within
+  // FOLDER_RENAME_GRACE_MS, the entry is cancelled and the folder is renamed
+  // remotely instead of deleted. Otherwise the timer fires and performs the
+  // real removeDirectoryMapping.
+  private pendingFolderRenames = new Map<
+    string,
+    { fingerprint: string; remoteId: string; timer: ReturnType<typeof setTimeout> }
+  >();
+
   constructor({ store, api, emitState }: SyncEngineOptions) {
     this.store = store;
     this.api = api;
@@ -184,6 +231,13 @@ export class SyncEngine {
       this.fsEventTimer = null;
       this.pendingFsEvents.length = 0;
     }
+    // Cancel any in-flight rename-deferral timers — without this they would
+    // fire after watchers are gone and try to delete folders we're no longer
+    // tracking, surfacing confusing errors.
+    for (const entry of this.pendingFolderRenames.values()) {
+      clearTimeout(entry.timer);
+    }
+    this.pendingFolderRenames.clear();
     for (const rootId of [...this.watchers.keys()]) {
       this.detachWatcher(rootId);
     }
@@ -529,15 +583,33 @@ export class SyncEngine {
         const rootId = events[0].rootId;
         this.setStatus("syncing", `Processing ${events.length} changes`, rootId);
 
-        // 1) Create directories first (sorted so parents come before children)
+        // 0) Defer dir-deletes into the rename-correlation buffer. Each gets
+        //    a 5s timer that, on expiry, performs the actual remote delete.
+        //    If a matching addDir lands in the same batch (step 1) or within
+        //    the grace window, the timer is cancelled and the folder is
+        //    renamed in place via PATCH /folders/{id}.
+        for (const evt of dirDeletes) {
+          const root = this.getRoot(evt.rootId);
+          if (!root) continue;
+          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          this.scheduleDeferredDirDelete(evt.rootId, rel);
+        }
+
+        // 1) Create directories (rename-aware): for each addDir, look in the
+        //    pending-rename buffer for a matching fingerprint. On match, PATCH
+        //    /folders/{id} to rename in place and remap mappings — no remote
+        //    delete-and-recreate.
         for (const evt of dirUpserts.sort((a, b) => a.fullPath.localeCompare(b.fullPath))) {
           const root = this.getRoot(evt.rootId);
           if (!root) continue;
           const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
+          const renamed = await this.tryRenameMatch(root, rel, evt.fullPath);
+          if (renamed) continue;
           await this.ensureRemoteFolder(root, rel);
         }
 
-        // 2) Upload files concurrently
+        // 2) Upload files concurrently (after step 1's remappings — children
+        //    under a renamed dir naturally no-op via signature comparison).
         await parallelMap(fileUpserts, UPLOAD_CONCURRENCY, async (evt) => {
           const root = this.getRoot(evt.rootId);
           if (!root) return;
@@ -546,7 +618,9 @@ export class SyncEngine {
           await this.syncFile(root, rel);
         });
 
-        // 3) Delete files
+        // 3) Delete files (renamed-dir children's mappings have been remapped
+        //    off the old paths in step 1, so these no-op naturally for true
+        //    renames; for genuine deletes they remove the remote file).
         for (const evt of fileDeletes) {
           const root = this.getRoot(evt.rootId);
           if (!root) continue;
@@ -554,13 +628,7 @@ export class SyncEngine {
           await this.removeFileMapping(evt.rootId, rel);
         }
 
-        // 4) Delete directories (deepest first)
-        for (const evt of dirDeletes.sort((a, b) => b.fullPath.localeCompare(a.fullPath))) {
-          const root = this.getRoot(evt.rootId);
-          if (!root) continue;
-          const rel = normalizeRelativePath(path.relative(root.localPath, evt.fullPath));
-          await this.removeDirectoryMapping(evt.rootId, rel);
-        }
+        // 4) dir-deletes were stashed for deferred handling in step 0.
 
         this.pushEvent(
           "success",
@@ -606,9 +674,13 @@ export class SyncEngine {
       dirStat = await fs.promises.stat(root.localPath);
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        // Watched root vanished — almost always a rename/move, sometimes a
+        // disk eject. Treat as a safety-net case: log it clearly and DO NOT
+        // touch the remote. The user can re-link by removing the root and
+        // adding the new path.
         this.pushEvent(
           "error",
-          `Folder not found locally, skipping: ${root.localPath}`,
+          `Folder is missing — was it renamed or moved? Re-link by removing it and adding the new path. Remote files were NOT touched: ${root.localPath}`,
           rootId,
         );
         this.setStatus("idle", "Idle");
@@ -661,15 +733,31 @@ export class SyncEngine {
       await this.ensureRemoteFolder(this.getRoot(rootId)!, dir);
     }
 
-    // Sync files — run UPLOAD_CONCURRENCY uploads in parallel
+    // Sync files — run UPLOAD_CONCURRENCY uploads in parallel. Per-file
+    // failures are reported individually and don't stop the rest of the batch.
     const sortedFiles = [...scan.files].sort();
-    await parallelMap(sortedFiles, UPLOAD_CONCURRENCY, async (file) => {
-      const progress = tracker.tick(file);
-      this.setStatus("syncing", `Uploading ${file}`, rootId, progress);
-      await this.syncFile(this.getRoot(rootId)!, file);
-    });
+    const failedUploads = await parallelMap(
+      sortedFiles,
+      UPLOAD_CONCURRENCY,
+      async (file) => {
+        const progress = tracker.tick(file);
+        this.setStatus("syncing", `Uploading ${file}`, rootId, progress);
+        await this.syncFile(this.getRoot(rootId)!, file);
+      },
+      (file, error) => {
+        this.pushEvent(
+          "error",
+          `Failed to upload ${file}: ${errorMessage(error)}`,
+          rootId,
+        );
+      },
+    );
 
-    // Clean up stale mappings (remote items that no longer exist locally)
+    // Clean up stale mappings (remote items that no longer exist locally).
+    // Guarded by a safety net: when more than half of the known mappings
+    // appear "missing" in one sweep, that is almost certainly a rename or
+    // move at the root, not a genuine mass-deletion. Skip the destructive
+    // cleanup and tell the user — re-linking the folder is the safe path.
     const staleMappings = Object.keys(mappings)
       .filter(
         (p) =>
@@ -678,20 +766,33 @@ export class SyncEngine {
       )
       .sort((a, b) => b.localeCompare(a));
 
-    for (const mappedPath of staleMappings) {
-      const item = mappings[mappedPath];
-      const progress = tracker.tick(mappedPath);
-      if (item.type === "file") {
-        this.setStatus("syncing", `Removing ${mappedPath}`, rootId, progress);
-        await this.removeFileMapping(rootId, mappedPath);
-      } else if (item.type === "folder") {
-        this.setStatus(
-          "syncing",
-          `Removing folder ${mappedPath}`,
-          rootId,
-          progress,
-        );
-        await this.removeDirectoryMapping(rootId, mappedPath);
+    const totalMappings = Object.keys(mappings).length;
+    const STALE_RATIO_LIMIT = 0.5;
+    const massDelete =
+      totalMappings > 0 &&
+      staleMappings.length / totalMappings > STALE_RATIO_LIMIT;
+    if (massDelete) {
+      this.pushEvent(
+        "error",
+        `Skipping mass-delete: ${staleMappings.length} of ${totalMappings} mappings appear missing — looks like a rename or move. Re-link the folder manually if intentional.`,
+        rootId,
+      );
+    } else {
+      for (const mappedPath of staleMappings) {
+        const item = mappings[mappedPath];
+        const progress = tracker.tick(mappedPath);
+        if (item.type === "file") {
+          this.setStatus("syncing", `Removing ${mappedPath}`, rootId, progress);
+          await this.removeFileMapping(rootId, mappedPath);
+        } else if (item.type === "folder") {
+          this.setStatus(
+            "syncing",
+            `Removing folder ${mappedPath}`,
+            rootId,
+            progress,
+          );
+          await this.removeDirectoryMapping(rootId, mappedPath);
+        }
       }
     }
 
@@ -701,7 +802,15 @@ export class SyncEngine {
       if (match) match.lastScanAt = new Date().toISOString();
       return state;
     });
-    this.pushEvent("success", `Synced ${root.label}`, rootId);
+    if (failedUploads > 0) {
+      this.pushEvent(
+        "error",
+        `Synced ${root.label} with ${failedUploads} failed upload${failedUploads > 1 ? "s" : ""} (see entries above)`,
+        rootId,
+      );
+    } else {
+      this.pushEvent("success", `Synced ${root.label}`, rootId);
+    }
     this.flushEmit();
   }
 
@@ -772,7 +881,14 @@ export class SyncEngine {
       ? await this.ensureRemoteFolder(root, parentRel)
       : root.remoteRootId;
 
-    // Upload first, handle race condition if file is deleted mid-upload
+    // Upload first, handle race condition if file is deleted mid-upload.
+    //
+    // For the change-existing case, the backend's commitUploadWithVersioning
+    // detects the same-name sibling and updates the EXISTING files row in
+    // place — snapshotting the prior content into file_versions, preserving
+    // the file id, comments, share grants and version history. The response's
+    // X-File-ID header therefore returns `existing.remoteId`. We must NOT
+    // issue a DELETE on it — doing so would destroy the file we just updated.
     let uploaded: RemoteEntity;
     try {
       uploaded = await this.api.uploadFile(fullPath, folderId);
@@ -782,11 +898,6 @@ export class SyncEngine {
         return null;
       }
       throw error;
-    }
-
-    // Delete old remote file only after new upload succeeds
-    if (existing?.type === "file") {
-      await this.api.deleteFile(existing.remoteId);
     }
 
     this.store.update((state) => {
@@ -799,6 +910,194 @@ export class SyncEngine {
       return state;
     });
     return uploaded.id;
+  }
+
+  /* ---- folder-rename detection ----------------------------------- */
+
+  /**
+   * Compute a stable fingerprint for a directory from its CURRENT mappings.
+   * Used when the local copy has just been unlinked — we still have the
+   * pre-deletion mapping snapshot in memory. Includes both immediate files
+   * (with sizes parsed from the stored signature) and immediate subfolder
+   * names, so folders that contain only subdirectories still get a useful
+   * fingerprint. Returns "" for an empty directory (no rename match possible).
+   */
+  private dirFingerprintFromMappings(rootId: string, dirRel: string): string {
+    const mappings = this.getMappings(rootId);
+    const prefix = `${dirRel}/`;
+    const children: string[] = [];
+    for (const [k, v] of Object.entries(mappings)) {
+      if (!k.startsWith(prefix)) continue;
+      const tail = k.slice(prefix.length);
+      if (tail.includes("/")) continue; // immediate children only
+      if (v.type === "file") {
+        const size = (v.signature ?? "").split(":")[0] || "0";
+        children.push(`f:${tail}:${size}`);
+      } else if (v.type === "folder") {
+        children.push(`d:${tail}`);
+      }
+    }
+    children.sort();
+    return children.join("|");
+  }
+
+  /**
+   * Compute the same-shaped fingerprint from a directory's local disk state.
+   * Used when an addDir event arrives — we read the new folder's immediate
+   * children and try to match against pending dir-deletes.
+   */
+  private async dirFingerprintFromLocal(dirAbsPath: string): Promise<string> {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dirAbsPath, { withFileTypes: true });
+    } catch {
+      return "";
+    }
+    const out: string[] = [];
+    for (const e of entries) {
+      if (shouldSkipEntry(e.name)) continue;
+      if (e.isFile()) {
+        let size = 0;
+        try {
+          const st = await fs.promises.stat(path.join(dirAbsPath, e.name));
+          size = st.size;
+        } catch {
+          /* size stays 0 — fingerprint still useful */
+        }
+        out.push(`f:${e.name}:${size}`);
+      } else if (e.isDirectory()) {
+        out.push(`d:${e.name}`);
+      }
+    }
+    out.sort();
+    return out.join("|");
+  }
+
+  /**
+   * Stash a dir-delete event into the rename-correlation buffer. If a
+   * matching addDir lands within FOLDER_RENAME_GRACE_MS, tryRenameMatch
+   * cancels this entry and renames remotely. Otherwise, the timer fires and
+   * performs the genuine removeDirectoryMapping (wrapped in enqueue so it
+   * stays in the per-engine queue order). Empty-fingerprint folders skip the
+   * defer and delete immediately — no rename match possible.
+   */
+  private scheduleDeferredDirDelete(rootId: string, oldRel: string): void {
+    const mappings = this.getMappings(rootId);
+    const existing = mappings[oldRel];
+    if (!existing || existing.type !== "folder") {
+      // Nothing in our mappings — enqueue the (no-op) removal so it stays
+      // ordered behind the in-flight batch task instead of racing it.
+      void this.enqueue(async () => {
+        await this.removeDirectoryMapping(rootId, oldRel);
+      });
+      return;
+    }
+    const fingerprint = this.dirFingerprintFromMappings(rootId, oldRel);
+    if (!fingerprint) {
+      // No usable fingerprint → can't correlate a rename. Enqueue the delete so
+      // it runs in queue order (the timer path below does the same) rather than
+      // racing the rest of the in-flight batch.
+      void this.enqueue(async () => {
+        await this.removeDirectoryMapping(rootId, oldRel);
+      });
+      return;
+    }
+    const key = `${rootId}::${oldRel}`;
+    const prior = this.pendingFolderRenames.get(key);
+    if (prior) clearTimeout(prior.timer);
+    const timer = setTimeout(() => {
+      this.pendingFolderRenames.delete(key);
+      void this.enqueue(async () => {
+        await this.removeDirectoryMapping(rootId, oldRel);
+      });
+    }, FOLDER_RENAME_GRACE_MS);
+    this.pendingFolderRenames.set(key, {
+      fingerprint,
+      remoteId: existing.remoteId,
+      timer,
+    });
+  }
+
+  /**
+   * If `newRel` matches a pending dir-delete by fingerprint, PATCH the remote
+   * folder to rename it in place and remap every mapping under oldRel/* to
+   * newRel/*. Returns true on rename (caller skips ensureRemoteFolder), false
+   * otherwise (caller treats it as a genuinely new folder).
+   */
+  private async tryRenameMatch(
+    root: Root,
+    newRel: string,
+    newAbsPath: string,
+  ): Promise<boolean> {
+    const newFp = await this.dirFingerprintFromLocal(newAbsPath);
+    if (!newFp) return false;
+
+    const prefix = `${root.id}::`;
+    let matchedKey: string | null = null;
+    let matchedOldRel: string | null = null;
+    let matchedRemoteId: string | null = null;
+    for (const [k, entry] of this.pendingFolderRenames) {
+      if (!k.startsWith(prefix)) continue;
+      if (entry.fingerprint !== newFp) continue;
+      matchedKey = k;
+      matchedOldRel = k.slice(prefix.length);
+      matchedRemoteId = entry.remoteId;
+      break;
+    }
+    if (!matchedKey || !matchedOldRel || !matchedRemoteId) return false;
+
+    // Resolve the new parent's remote id (folder may have moved as well).
+    const newParentRel = parentRelativePath(newRel);
+    const newParentId = newParentRel
+      ? await this.ensureRemoteFolder(root, newParentRel)
+      : root.remoteRootId;
+
+    // Cancel the pending deferred delete BEFORE the PATCH — if PATCH fails we
+    // surface the error but don't leave a stale timer pointing at a folder
+    // we may have partially renamed.
+    const entry = this.pendingFolderRenames.get(matchedKey)!;
+    clearTimeout(entry.timer);
+    this.pendingFolderRenames.delete(matchedKey);
+
+    try {
+      await this.api.renameFolder(
+        matchedRemoteId,
+        path.posix.basename(newRel),
+        newParentId,
+      );
+    } catch (error: unknown) {
+      this.pushEvent(
+        "error",
+        `Detected rename ${matchedOldRel} → ${newRel} but the remote rename failed: ${errorMessage(error)}`,
+        root.id,
+      );
+      return false;
+    }
+
+    // Remap mappings: every key starting with `${matchedOldRel}` (the folder
+    // itself or any descendant) is rewritten to `${newRel}…`, preserving each
+    // child's remoteId. The old key is removed.
+    this.store.update((state) => {
+      const m = state.mappings[root.id];
+      if (!m) return state;
+      const oldPrefix = `${matchedOldRel}/`;
+      const moves: Array<[string, string]> = [];
+      for (const k of Object.keys(m)) {
+        if (k === matchedOldRel) {
+          moves.push([k, newRel]);
+        } else if (k.startsWith(oldPrefix)) {
+          moves.push([k, newRel + "/" + k.slice(oldPrefix.length)]);
+        }
+      }
+      for (const [oldK, newK] of moves) {
+        m[newK] = m[oldK];
+        delete m[oldK];
+      }
+      return state;
+    });
+
+    this.pushEvent("success", `Renamed folder ${matchedOldRel} → ${newRel}`, root.id);
+    return true;
   }
 
   /* ---- mapping cleanup ------------------------------------------- */

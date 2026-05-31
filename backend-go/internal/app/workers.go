@@ -39,12 +39,31 @@ func goSafe(name string, fn func()) {
 // context cancellation; transient errors are logged with a backoff sleep so
 // a flaky Redis doesn't burn CPU.
 func (a *App) startWorkers(ctx context.Context) {
+	// Reconstruct the webhook fan-out set from the DB at boot. Redis is
+	// ephemeral, so without this webhooks silently stop firing after a Redis
+	// restart until the next maintenance tick. Done inline (before serving) so
+	// the set is correct from the first request.
+	a.rebuildWebhookUserSet(ctx)
+
 	goSafe("q:thumb", func() { a.drainQueue(ctx, "q:thumb", a.processThumbJob) })
 	goSafe("q:extract", func() { a.drainQueue(ctx, "q:extract", a.processExtractJob) })
 	// HLS transcoder. Single worker; the underlying ffmpeg already
 	// saturates a core, and queueing multiple concurrent transcodes on
 	// the same host would starve everything else.
 	goSafe("q:hls", func() { a.drainQueue(ctx, "q:hls", a.processHLSJob) })
+	// Outbound webhook delivery. A small pool of workers: deliveries are
+	// I/O-bound and retried in-job, so a single worker lets one user's slow or
+	// failing endpoint head-of-line block every other user's deliveries. Each
+	// job is self-contained (DB read + HTTP + per-delivery DB write) and safe to
+	// run concurrently; per-hook ordering isn't guaranteed regardless (retries
+	// and backoff reorder), and the payload carries `ts` for receivers that care.
+	webhookWorkers := a.Config.WebhookDeliveryConcurrency
+	if webhookWorkers < 1 {
+		webhookWorkers = 1
+	}
+	for i := 0; i < webhookWorkers; i++ {
+		goSafe("q:webhook", func() { a.drainQueue(ctx, "q:webhook", a.processWebhookJob) })
+	}
 	goSafe("maintenance", func() { a.startMaintenanceTicker(ctx) })
 	// Metrics sampler runs on a slower cadence than maintenance — once every
 	// 15s gives Prometheus a fresh value at the default 15s scrape interval
@@ -59,7 +78,7 @@ func (a *App) startWorkers(ctx context.Context) {
 func (a *App) startMetricsSampler(ctx context.Context) {
 	t := time.NewTicker(15 * time.Second)
 	defer t.Stop()
-	queues := []string{"q:thumb", "q:extract", "q:hls"}
+	queues := []string{"q:thumb", "q:extract", "q:hls", "q:webhook"}
 	hb := a.Heartbeats["metrics"]
 	for {
 		select {
@@ -306,4 +325,27 @@ func (a *App) runMaintenance(ctx context.Context) {
 		   OR (d.is_deleted = 1 AND d.deleted_at < NOW() - INTERVAL 30 DAY)`); err != nil {
 		mLog.Error("prune orphan share_grants", "error", err)
 	}
+	// Webhook delivery log retention. Batched like activity_log to avoid lock
+	// escalation on a busy table.
+	for batch := 0; batch < 100; batch++ {
+		res, err := a.DB.ExecContext(ctx,
+			"DELETE FROM webhook_deliveries WHERE created_at < NOW() - INTERVAL 30 DAY LIMIT 5000")
+		if err != nil {
+			mLog.Error("prune webhook_deliveries", "error", err)
+			break
+		}
+		n, _ := res.RowsAffected()
+		if n < 5000 {
+			break
+		}
+	}
+	// End expired webhook secret-rotation grace windows.
+	if _, err := a.DB.ExecContext(ctx,
+		"UPDATE webhooks SET previous_secret = NULL, previous_secret_expires_at = NULL WHERE previous_secret_expires_at < NOW()"); err != nil {
+		mLog.Error("expire webhook rotation secrets", "error", err)
+	}
+	// Backstop the webhook fan-out set against drift / Redis restarts, and
+	// flush queued PAT last-used observations.
+	a.rebuildWebhookUserSet(ctx)
+	a.flushPATTouches(ctx)
 }

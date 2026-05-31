@@ -31,14 +31,22 @@ const els = {
   apiBaseUrl:      document.getElementById("apiBaseUrl"),
   email:           document.getElementById("email"),
   password:        document.getElementById("password"),
+  token:           document.getElementById("token"),
+  modePassword:    document.getElementById("mode-password"),
+  modeToken:       document.getElementById("mode-token"),
+  passwordFields:  document.getElementById("password-fields"),
+  tokenFields:     document.getElementById("token-fields"),
+  createTokenLink: document.getElementById("create-token-link"),
   allowSelfSigned: document.getElementById("allowSelfSignedTls"),
   loginBtn:        document.getElementById("login-btn"),
   loginError:      document.getElementById("login-error"),
 
   // Settings view
-  accountUsername: document.getElementById("account-username"),
-  accountEmail:    document.getElementById("account-email"),
-  accountApiUrl:   document.getElementById("account-api-url"),
+  accountUsername:    document.getElementById("account-username"),
+  accountEmail:       document.getElementById("account-email"),
+  accountApiUrl:      document.getElementById("account-api-url"),
+  accountDot:         document.getElementById("account-dot"),
+  accountStatusLabel: document.getElementById("account-status-label"),
   storageText:     document.getElementById("storage-text"),
   storageFill:     document.getElementById("storage-fill"),
   autoSyncSelect:  document.getElementById("auto-sync-select"),
@@ -58,6 +66,26 @@ const els = {
 /* ------------------------------------------------------------------ */
 let currentState = null;
 let currentView = ""; // "main" | "login" | "settings"
+let authMode = "password"; // "password" | "token"
+
+/* ------------------------------------------------------------------ */
+/*  Login mode toggle                                                  */
+/* ------------------------------------------------------------------ */
+function setAuthMode(mode) {
+  authMode = mode;
+  const isToken = mode === "token";
+  els.modePassword.classList.toggle("active", !isToken);
+  els.modeToken.classList.toggle("active", isToken);
+  els.modePassword.setAttribute("aria-selected", String(!isToken));
+  els.modeToken.setAttribute("aria-selected", String(isToken));
+  els.passwordFields.classList.toggle("is-hidden", isToken);
+  els.tokenFields.classList.toggle("is-hidden", !isToken);
+  // Only the visible inputs may be `required` — a hidden required field blocks
+  // submit with a non-focusable-control error.
+  els.email.required = !isToken;
+  els.password.required = !isToken;
+  els.token.required = isToken;
+}
 
 /* ------------------------------------------------------------------ */
 /*  View switching                                                     */
@@ -220,6 +248,28 @@ function render(snapshot) {
   const labels = { idle: "Idle", syncing: "Syncing", error: "Error", paused: "Paused" };
   els.statusLabel.textContent = labels[stateKey] || stateKey;
 
+  // ── Account card + settings-button gating (runs every render so it
+  //    reflects the live auth state even on the logged-out branch — without
+  //    this, the static "Connected / —" markup leaks through whenever the
+  //    user navigates to settings while signed out). ─────────────────────
+  if (user) {
+    els.accountUsername.textContent    = user.username || "-";
+    els.accountEmail.textContent       = user.email || "-";
+    els.accountApiUrl.textContent      = snapshot.apiBaseUrl || "http://localhost:8080";
+    els.accountStatusLabel.textContent = "Connected";
+    els.accountDot.classList.remove("disconnected");
+  } else {
+    els.accountUsername.textContent    = "Not signed in";
+    els.accountEmail.textContent       = "";
+    els.accountApiUrl.textContent      = snapshot.apiBaseUrl || "";
+    els.accountStatusLabel.textContent = "Disconnected";
+    els.accountDot.classList.add("disconnected");
+  }
+  els.settingsBtn.disabled = !user;
+  // If the user got signed out while viewing settings, drop back to the
+  // login view rather than leaving a disabled / disconnected settings panel.
+  if (!user && currentView === "settings") showView("login");
+
   // ── View routing ────────────────────────────────────────────────
   if (!user) {
     showView("login");
@@ -278,7 +328,14 @@ els.settingsBtn.addEventListener("click", () => {
   showView(currentView === "settings" ? "main" : "settings");
 });
 
-// Login form submit
+// Sign-in mode toggle
+els.modePassword.addEventListener("click", () => setAuthMode("password"));
+els.modeToken.addEventListener("click", () => setAuthMode("token"));
+els.createTokenLink.addEventListener("click", () => {
+  window.desktopApi.openTokenSettings(els.apiBaseUrl.value || "");
+});
+
+// Login form submit — branches on the selected sign-in mode.
 els.loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   els.loginError.classList.add("is-hidden");
@@ -286,20 +343,34 @@ els.loginForm.addEventListener("submit", async (e) => {
   els.loginBtn.textContent = "Signing in...";
   const form = new FormData(els.loginForm);
   try {
-    await window.desktopApi.login({
-      apiBaseUrl:       form.get("apiBaseUrl"),
-      email:            form.get("email"),
-      password:         form.get("password"),
-      allowSelfSignedTls: form.get("allowSelfSignedTls") === "on",
-    });
-    els.password.value = "";
+    if (authMode === "token") {
+      const token = (form.get("token") || "").toString().trim();
+      if (!token) throw new Error("Enter an access token");
+      await window.desktopApi.signInWithToken({
+        apiBaseUrl:         form.get("apiBaseUrl"),
+        token,
+        allowSelfSignedTls: form.get("allowSelfSignedTls") === "on",
+      });
+      els.token.value = "";
+    } else {
+      await window.desktopApi.login({
+        apiBaseUrl:         form.get("apiBaseUrl"),
+        email:              form.get("email"),
+        password:           form.get("password"),
+        allowSelfSignedTls: form.get("allowSelfSignedTls") === "on",
+      });
+      els.password.value = "";
+    }
   } catch (err) {
-    showError(err.message || "Login failed");
+    showError(err.message || "Sign in failed");
   } finally {
     els.loginBtn.disabled = false;
     els.loginBtn.textContent = "Sign In";
   }
 });
+
+// Initialise required-attribute state for the default (password) mode.
+setAuthMode("password");
 
 // Logout
 els.logoutBtn.addEventListener("click", async () => {

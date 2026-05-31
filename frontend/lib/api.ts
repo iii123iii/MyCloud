@@ -237,6 +237,104 @@ export const sessions = {
   revoke: (jti: string) => request<void>(`/api/v2/me/sessions/${encodeURIComponent(jti)}`, { method: "DELETE" }),
 };
 
+// ── Personal access tokens ──────────────────────────────────────────────────
+
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  last_four: string;
+  scopes: string[];
+  last_used_at: string | null;
+  last_used_ip: string | null;
+  expires_at: string | null;
+  created_at: string;
+  // Plaintext token — present ONLY in the create response, shown to the user once.
+  token?: string;
+}
+
+// PAT_SCOPES drives the create-token scope picker. "*" is a deliberate explicit
+// choice: selecting it supersedes the others in the UI, but the client always
+// sends exactly ["*"] rather than the expanded set (least privilege — see
+// canonicalizeScopes server-side).
+export const PAT_SCOPES = [
+  { value: "files:read", label: "Read files & folders", read: true },
+  { value: "files:write", label: "Create, modify & delete files & folders", read: false },
+  { value: "shares:read", label: "Read shares & grants", read: true },
+  { value: "shares:write", label: "Create & delete shares & grants", read: false },
+  { value: "tags:read", label: "Read tags", read: true },
+  { value: "tags:write", label: "Manage tags", read: false },
+  { value: "account:read", label: "Read account profile", read: true },
+  { value: "*", label: "Full access (all scopes)", read: false },
+] as const;
+
+export const tokens = {
+  list: () => request<{ tokens: PersonalAccessToken[] }>("/api/v2/me/tokens"),
+  create: (data: { name: string; scopes: string[]; expires_at?: string }) =>
+    request<PersonalAccessToken>("/api/v2/me/tokens", { method: "POST", body: JSON.stringify(data) }),
+  rename: (id: string, name: string) =>
+    request<{ message: string }>(`/api/v2/me/tokens/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  revoke: (id: string) => request<void>(`/api/v2/me/tokens/${id}`, { method: "DELETE" }),
+};
+
+// ── Outbound webhooks ───────────────────────────────────────────────────────
+
+export interface Webhook {
+  id: string;
+  url: string;
+  events: string[];
+  is_active: boolean;
+  failure_count: number;
+  last_delivery_at: string | null;
+  created_at: string;
+  updated_at?: string;
+  // Signing secret — present ONLY in create / rotate-secret responses.
+  secret?: string;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  event_type: string;
+  status: "pending" | "success" | "failed";
+  response_status: number | null;
+  error: string | null;
+  attempts: number;
+  created_at: string;
+  delivered_at: string | null;
+}
+
+// WEBHOOK_EVENTS is a curated list of common event names for the picker. The
+// backend accepts any activity action string; an empty selection or "*" means
+// "all of the owner's events".
+export const WEBHOOK_EVENTS = [
+  { value: "file.upload", label: "File uploaded" },
+  { value: "file.update", label: "File updated" },
+  { value: "file.delete", label: "File deleted" },
+  { value: "file.restore", label: "File restored" },
+  { value: "file.copy", label: "File copied" },
+  { value: "folder.create", label: "Folder created" },
+  { value: "folder.update", label: "Folder updated" },
+  { value: "folder.delete", label: "Folder deleted" },
+  { value: "share.create", label: "Share created" },
+  { value: "share.delete", label: "Share deleted" },
+  { value: "grant.create", label: "Access granted" },
+  { value: "grant.revoke", label: "Access revoked" },
+] as const;
+
+export const webhooks = {
+  list: () => request<{ webhooks: Webhook[] }>("/api/v2/me/webhooks"),
+  create: (data: { url: string; events: string[]; is_active?: boolean }) =>
+    request<Webhook>("/api/v2/me/webhooks", { method: "POST", body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<{ url: string; events: string[]; is_active: boolean }>) =>
+    request<{ message: string }>(`/api/v2/me/webhooks/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/api/v2/me/webhooks/${id}`, { method: "DELETE" }),
+  deliveries: (id: string) => request<{ deliveries: WebhookDelivery[] }>(`/api/v2/me/webhooks/${id}/deliveries`),
+  test: (id: string) =>
+    request<{ ok: boolean; response_status: number; error?: string }>(`/api/v2/me/webhooks/${id}:test`, { method: "POST" }),
+  rotateSecret: (id: string) =>
+    request<{ secret: string; grace_hours: number }>(`/api/v2/me/webhooks/${id}:rotate-secret`, { method: "POST" }),
+};
+
 export const files = {
   list: async (params?: {
     folder_id?: string; sort?: string; order?: string;
@@ -554,8 +652,13 @@ export const trash = {
 };
 
 export const search = {
-  query: (q: string, scope: "name" | "content" | "both" = "both") =>
-    request<{ results: SearchResult[] }>(`/api/v2/search?q=${encodeURIComponent(q)}&scope=${scope}`),
+  // folderId scopes the search to that folder's subtree (the backend walks
+  // descendants). Omitted ⇒ global, whole-drive search (the ⌘K palette path).
+  query: (q: string, scope: "name" | "content" | "both" = "both", folderId?: string) =>
+    request<{ results: SearchResult[] }>(
+      `/api/v2/search?q=${encodeURIComponent(q)}&scope=${scope}` +
+        (folderId ? `&folder_id=${encodeURIComponent(folderId)}` : ""),
+    ),
 };
 
 export interface Photo {

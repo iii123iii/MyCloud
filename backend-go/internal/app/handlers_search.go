@@ -16,6 +16,9 @@ import (
 // Query params:
 //   q     — search term (required)
 //   scope — "name" | "content" | "both" (default "both")
+//   folder_id — optional; when set, constrains every search path to that
+//               folder's recursive subtree (the folder + all descendants),
+//               owner-scoped. Omitted ⇒ global, whole-drive search.
 func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r)
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -26,6 +29,26 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	if scope == "" {
 		scope = "both"
+	}
+
+	// Optional folder scope. When folder_id is supplied, constrain every search
+	// path to that folder's recursive subtree (the folder itself plus all
+	// nested descendants). collectFolderTree is user-scoped, so an unknown or
+	// foreign folder yields an empty subtree → no results. A nil subtree (no
+	// folder_id) preserves the global, whole-drive search.
+	folderID := strings.TrimSpace(r.URL.Query().Get("folder_id"))
+	var subtreeIDs []string
+	if folderID != "" {
+		ids, err := a.collectFolderTree(r.Context(), userID, folderID)
+		if err != nil {
+			respondDBError(w, r, err)
+			return
+		}
+		if len(ids) == 0 {
+			httpapi.JSON(w, http.StatusOK, map[string]any{"results": []map[string]any{}}, nil)
+			return
+		}
+		subtreeIDs = ids
 	}
 
 	results := make([]map[string]any, 0, 100)
@@ -53,8 +76,15 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		// User-scoped base query. file_tags / tags joins live inside the
 		// fragment as EXISTS subqueries so the SELECT shape stays uniform.
 		query := `SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
-		          FROM files WHERE user_id = ? AND is_deleted = 0` + frag + ` LIMIT 100`
+		          FROM files WHERE user_id = ? AND is_deleted = 0` + frag
 		queryArgs := append([]any{userID}, args...)
+		// Constrain to the folder subtree when scoped. Must precede LIMIT.
+		if subtreeIDs != nil {
+			ph, idArgs := inClause(subtreeIDs)
+			query += " AND folder_id IN " + ph
+			queryArgs = append(queryArgs, idArgs...)
+		}
+		query += " LIMIT 100"
 		rows, err := a.DB.QueryContext(r.Context(), query, queryArgs...)
 		if err != nil {
 			respondDBError(w, r, err)
@@ -83,7 +113,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// long enough; fall back to LIKE for short queries so single-character
 	// searches still work (MariaDB's default minimum token length is 3).
 	if scope == "name" || scope == "both" {
-		nameRows, err := a.queryNameMatches(r, userID, q)
+		nameRows, err := a.queryNameMatches(r, userID, q, subtreeIDs)
 		if err != nil {
 			respondDBError(w, r, err)
 			return
@@ -95,7 +125,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	// ── Content matches via file_text FULLTEXT.
 	if scope == "content" || scope == "both" {
-		contentRows, err := a.queryContentMatches(r, userID, q)
+		contentRows, err := a.queryContentMatches(r, userID, q, subtreeIDs)
 		if err != nil {
 			respondDBError(w, r, err)
 			return
@@ -108,7 +138,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	httpapi.JSON(w, http.StatusOK, map[string]any{"results": results}, nil)
 }
 
-func (a *App) queryNameMatches(r *http.Request, userID, q string) ([]map[string]any, error) {
+func (a *App) queryNameMatches(r *http.Request, userID, q string, subtreeIDs []string) ([]map[string]any, error) {
 	// Fuzzy path uses the ngram FULLTEXT on name_normalised so even
 	// 2-char prefixes and typo'd queries return candidates. The composer
 	// builds two candidate sets:
@@ -118,17 +148,34 @@ func (a *App) queryNameMatches(r *http.Request, userID, q string) ([]map[string]
 	// Results are scored client-side by Damerau-Levenshtein and ordered.
 	normQ := search.NormaliseName(q)
 	like := "%" + normQ + "%"
+	// Optional folder-subtree scope. Files filter on folder_id; folders filter
+	// on parent_id, which yields exactly the root's descendant folders (and
+	// naturally excludes the root you're already inside). Args are assembled in
+	// the same left-to-right order as the placeholders.
+	filesScope, foldersScope := "", ""
+	queryArgs := []any{userID, like, q}
+	if subtreeIDs != nil {
+		ph, idArgs := inClause(subtreeIDs)
+		filesScope = " AND folder_id IN " + ph
+		queryArgs = append(queryArgs, idArgs...)
+	}
+	queryArgs = append(queryArgs, userID, like)
+	if subtreeIDs != nil {
+		ph, idArgs := inClause(subtreeIDs)
+		foldersScope = " AND parent_id IN " + ph
+		queryArgs = append(queryArgs, idArgs...)
+	}
 	rows, err := a.DB.QueryContext(r.Context(), `
 		SELECT 'file' AS item_type, id, name, size_bytes, mime_type, is_starred, updated_at
 		FROM files
 		WHERE user_id=? AND is_deleted=0
 		  AND (COALESCE(name_normalised, LOWER(name)) LIKE ?
-		    OR MATCH(name) AGAINST(? IN NATURAL LANGUAGE MODE))
+		    OR MATCH(name) AGAINST(? IN NATURAL LANGUAGE MODE))`+filesScope+`
 		UNION ALL
 		SELECT 'folder', id, name, NULL, NULL, NULL, updated_at
-		FROM folders WHERE user_id=? AND is_deleted=0 AND LOWER(name) LIKE ?
+		FROM folders WHERE user_id=? AND is_deleted=0 AND LOWER(name) LIKE ?`+foldersScope+`
 		ORDER BY updated_at DESC LIMIT 200`,
-		userID, like, q, userID, like)
+		queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +240,17 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-func (a *App) queryContentMatches(r *http.Request, userID, q string) ([]map[string]any, error) {
+func (a *App) queryContentMatches(r *http.Request, userID, q string, subtreeIDs []string) ([]map[string]any, error) {
 	if len(q) < 3 {
 		return nil, nil // FULLTEXT needs at least 3 chars
+	}
+	// Optional folder-subtree scope on the file's containing folder.
+	folderScope := ""
+	queryArgs := []any{q, userID, q}
+	if subtreeIDs != nil {
+		ph, idArgs := inClause(subtreeIDs)
+		folderScope = " AND f.folder_id IN " + ph
+		queryArgs = append(queryArgs, idArgs...)
 	}
 	// Alias the MATCH expression in a subquery so the FT scan only runs
 	// once, while the outer SELECT keeps the column shape scanSearchRows
@@ -210,10 +265,10 @@ func (a *App) queryContentMatches(r *http.Request, userID, q string) ([]map[stri
 		    FROM files f
 		    JOIN file_text t ON t.file_id = f.id
 		    WHERE f.user_id=? AND f.is_deleted=0
-		      AND MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE)
+		      AND MATCH(t.content) AGAINST(? IN NATURAL LANGUAGE MODE)`+folderScope+`
 		    ORDER BY relevance DESC
 		    LIMIT 100
-		) ranked`, q, userID, q)
+		) ranked`, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("content search: %w", err)
 	}

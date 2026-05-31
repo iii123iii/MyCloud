@@ -22,7 +22,7 @@ import (
 
 // dlqQueues lists the source queues whose :failed counterpart we expose.
 // Keep in sync with the workers started in startWorkers.
-var dlqQueues = []string{"q:thumb", "q:extract", "q:hls"}
+var dlqQueues = []string{"q:thumb", "q:extract", "q:hls", "q:webhook"}
 
 // handleAdminDLQList returns the depth + a sample of entries for every
 // known DLQ. Sample is bounded so a huge backlog doesn't pin the admin UI
