@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -27,9 +28,10 @@ func createPairing(t *testing.T, a *testApp) (string, string) {
 	}
 	var env struct {
 		Data struct {
-			Code     string `json:"code"`
-			Verifier string `json:"verifier"`
-			URL      string `json:"url"`
+			Code      string `json:"code"`
+			Verifier  string `json:"verifier"`
+			URL       string `json:"url"`
+			ExpiresAt string `json:"expires_at"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
@@ -37,6 +39,9 @@ func createPairing(t *testing.T, a *testApp) (string, string) {
 	}
 	if env.Data.Code == "" || env.Data.Verifier == "" {
 		t.Fatalf("create: empty code/verifier in %s", w.Body.String())
+	}
+	if _, err := time.Parse(time.RFC3339, env.Data.ExpiresAt); err != nil {
+		t.Fatalf("create: invalid expires_at %q: %v", env.Data.ExpiresAt, err)
 	}
 	return env.Data.Code, env.Data.Verifier
 }

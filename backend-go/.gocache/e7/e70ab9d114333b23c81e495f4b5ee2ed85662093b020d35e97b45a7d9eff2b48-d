@@ -1,0 +1,4 @@
+# test log
+getenv LUA_PATH
+getenv LUA_PATH
+getenv LUA_PATH

@@ -59,6 +59,12 @@ function qrPayload(ticket: DeviceLinkTicket): string {
   return JSON.stringify({ v: 1, url, code: ticket.code, verifier: ticket.verifier });
 }
 
+function secondsUntil(timestamp: string): number {
+  const expiresAt = Date.parse(timestamp);
+  if (!Number.isFinite(expiresAt)) return 0;
+  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+}
+
 export function LinkDeviceView() {
   const { data: me } = useSWR("me", authApi.me, { shouldRetryOnError: false });
   const userId = me?.id;
@@ -84,7 +90,7 @@ export function LinkDeviceView() {
       setTicket(t);
       setScanned(null);
       setPhase("waiting");
-      setSecondsLeft(t.expires_in);
+      setSecondsLeft(secondsUntil(t.expires_at));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't start device linking");
     } finally {
@@ -144,14 +150,15 @@ export function LinkDeviceView() {
 
   // Countdown while the QR is live. At zero, the unscanned code has expired.
   useEffect(() => {
+    if (!ticket) return;
     if (phase !== "waiting" && phase !== "scanned" && phase !== "approving") return;
     if (secondsLeft <= 0) {
       if (phase === "waiting") setPhase("expired");
       return;
     }
-    const t = setTimeout(() => setSecondsLeft((n) => n - 1), 1000);
+    const t = setTimeout(() => setSecondsLeft(secondsUntil(ticket.expires_at)), 1000);
     return () => clearTimeout(t);
-  }, [phase, secondsLeft]);
+  }, [ticket, phase, secondsLeft]);
 
   // Polling fallback in case the WS is down — cheap, short-lived, only while
   // a pairing is in flight.
@@ -212,7 +219,7 @@ export function LinkDeviceView() {
           <CardTitle>Scan to sign in</CardTitle>
           <CardDescription>
             Open the MyCloud app on your phone, choose “Scan QR to sign in”, and
-            point it at the code. The code expires after a minute.
+            point it at the code. The code expires after two minutes.
           </CardDescription>
         </CardHeader>
         <CardContent>

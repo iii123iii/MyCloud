@@ -26,7 +26,7 @@ import (
 // extension OnlyOffice expects in its document config.
 var supportedOfficeMimes = map[string]string{
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   "docx",
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":        "xlsx",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         "xlsx",
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
 }
 
@@ -146,12 +146,13 @@ func (a *App) handleOfficeDoc(w http.ResponseWriter, r *http.Request) {
 
 // handleOfficeCallback is invoked by OnlyOffice when document state changes.
 // status codes (from OnlyOffice docs):
-//   1 = being edited
-//   2 = ready for saving (download from .url)
-//   3 = saving error
-//   4 = closed without changes
-//   6 = being edited but saved
-//   7 = error while force-save
+//
+//	1 = being edited
+//	2 = ready for saving (download from .url)
+//	3 = saving error
+//	4 = closed without changes
+//	6 = being edited but saved
+//	7 = error while force-save
 func (a *App) handleOfficeCallback(w http.ResponseWriter, r *http.Request) {
 	if a.Config.OfficeJWTSecret == "" {
 		http.Error(w, "office disabled", http.StatusNotImplemented)
@@ -298,11 +299,44 @@ func (a *App) publicBackendURL(r *http.Request) string {
 	if a.Config.PublicBackendURL != "" {
 		return strings.TrimRight(a.Config.PublicBackendURL, "/")
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	scheme := firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		scheme = forwardedParam(r.Header.Get("Forwarded"), "proto")
 	}
-	return scheme + "://" + r.Host
+	if scheme == "" {
+		scheme = "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	host := firstHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = forwardedParam(r.Header.Get("Forwarded"), "host")
+	}
+	if host == "" {
+		host = r.Host
+	}
+	return strings.ToLower(scheme) + "://" + host
+}
+
+func firstHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Split(value, ",")[0])
+}
+
+func forwardedParam(header, key string) string {
+	key = strings.ToLower(key)
+	for _, part := range strings.Split(header, ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || strings.ToLower(strings.TrimSpace(name)) != key {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"`)
+	}
+	return ""
 }
 
 func (a *App) lookupUsername(ctx interface {

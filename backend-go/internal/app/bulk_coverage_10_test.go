@@ -147,6 +147,17 @@ func TestPublicBackendURL_FromRequest(t *testing.T) {
 	}
 }
 
+func TestPublicBackendURL_FromForwardedHeaders(t *testing.T) {
+	a := newTestApp(t)
+	r := httptest.NewRequest("GET", "http://backend:8080/", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	r.Header.Set("X-Forwarded-Host", "192.168.1.142:8443")
+	got := a.publicBackendURL(r)
+	if got != "https://192.168.1.142:8443" {
+		t.Errorf("expected forwarded public URL, got %q", got)
+	}
+}
+
 // ─── lookupUsername ─────────────────────────────────────────────────────────
 
 func TestLookupUsername_Found(t *testing.T) {

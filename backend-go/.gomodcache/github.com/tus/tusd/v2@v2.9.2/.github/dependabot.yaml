@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      gha:
+        patterns:
+          - '*'
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      docker:
+        patterns:
+          - '*'
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      go:
+        patterns:
+          - '*'
+
+  - package-ecosystem: bundler
+    directory: /docs/
+    schedule:
+      interval: monthly
+    allow:
+      - dependency-type: direct
+    groups:
+      website:
+        patterns:
+          - '*'

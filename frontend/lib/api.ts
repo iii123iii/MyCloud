@@ -259,7 +259,7 @@ export interface DeviceLinkTicket {
   verifier: string;
   // Server base URL the phone should talk to (auto-configures the app).
   url: string;
-  expires_in: number;
+  expires_at: string;
 }
 
 export interface DeviceLinkStatus {

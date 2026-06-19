@@ -43,7 +43,7 @@ import (
 const (
 	// pairPendingTTL bounds how long an unscanned QR is valid. Short so a
 	// photographed-but-unused code expires quickly.
-	pairPendingTTL = 60 * time.Second
+	pairPendingTTL = 120 * time.Second
 	// pairApprovalTTL is the window after a scan for the user to approve and
 	// the phone to collect its tokens.
 	pairApprovalTTL = 120 * time.Second
@@ -75,8 +75,8 @@ func verifierHash(verifier string) string {
 // tokens, flip state to "consumed", and drop the tokens field — so a racing
 // second poller can never retrieve them.
 //
-//   KEYS[1] = pair:<code>   ARGV[1] = verifier_hash   ARGV[2] = tombstone ms
-//   returns {state} or {"approved", tokensJSON}
+//	KEYS[1] = pair:<code>   ARGV[1] = verifier_hash   ARGV[2] = tombstone ms
+//	returns {state} or {"approved", tokensJSON}
 var pollConsumeScript = redis.NewScript(`
 local key = KEYS[1]
 if redis.call('EXISTS', key) == 0 then
@@ -117,6 +117,7 @@ func (a *App) handleDeviceLinkCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	key := pairKey(code)
+	expiresAt := time.Now().UTC().Add(pairPendingTTL)
 	if err := a.Redis.HSet(ctx, key, map[string]any{
 		"state":         "pending",
 		"user_id":       userID,
@@ -132,7 +133,7 @@ func (a *App) handleDeviceLinkCreate(w http.ResponseWriter, r *http.Request) {
 		"code":       code,
 		"verifier":   verifier,
 		"url":        a.publicBackendURL(r),
-		"expires_in": int(pairPendingTTL.Seconds()),
+		"expires_at": expiresAt.Format(time.RFC3339),
 	}, nil)
 }
 
