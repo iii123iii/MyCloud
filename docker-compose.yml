@@ -36,6 +36,7 @@ services:
       MASTER_ENCRYPTION_KEY_FILE: /run/secrets/master_encryption_key
       STORAGE_PATH: /data/files
       ALLOWED_ORIGINS: https://localhost
+      MYCLOUD_PUBLIC_BACKEND_URL: ${MYCLOUD_PUBLIC_BACKEND_URL:-}
       MYCLOUD_UPDATE_COMMAND: "${MYCLOUD_UPDATE_COMMAND:-cd /opt/mycloud && sh ./scripts/apply-update.sh}"
       MYCLOUD_UPDATE_LOG_PATH: ${MYCLOUD_UPDATE_LOG_PATH:-/data/logs/update.log}
       MYCLOUD_PROJECT_DIR: /opt/mycloud
@@ -45,6 +46,8 @@ services:
       - file_storage:/data/files
       - logs:/data/logs
       - secrets:/run/secrets:ro
+    ports:
+      - "${MYCLOUD_BACKEND_PORT:-8080}:8080"
     depends_on:
       init:
         condition: service_completed_successfully
@@ -83,7 +86,7 @@ services:
   frontend:
     build: ./frontend
     environment:
-      - NEXT_PUBLIC_API_URL=https://localhost
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://localhost}
     depends_on:
       - backend
     restart: unless-stopped
