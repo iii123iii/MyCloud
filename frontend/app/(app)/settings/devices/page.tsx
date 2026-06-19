@@ -53,8 +53,9 @@ interface ScannedInfo {
 // which server to talk to (auto-config), `code`+`verifier` authorise the claim.
 function qrPayload(ticket: DeviceLinkTicket): string {
   const url =
+    ticket.url ||
     process.env.NEXT_PUBLIC_API_URL ||
-    (typeof window !== "undefined" ? window.location.origin : ticket.url);
+    (typeof window !== "undefined" ? window.location.origin : "");
   return JSON.stringify({ v: 1, url, code: ticket.code, verifier: ticket.verifier });
 }
 

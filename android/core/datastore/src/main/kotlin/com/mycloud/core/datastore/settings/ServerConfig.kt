@@ -66,15 +66,27 @@ class ServerConfig @Inject constructor(
     private fun normalize(raw: String): String {
         var s = raw.trim()
         if (s.isEmpty()) return DEFAULT
-        // Default to https when no scheme is given — never silently fall back to
-        // plaintext http. A user who really needs http must type it explicitly.
         if (!s.startsWith("http://", ignoreCase = true) &&
             !s.startsWith("https://", ignoreCase = true)
         ) {
-            s = "https://$s"
+            val host = s.substringBefore('/').substringBefore(':')
+            s = if (host.isLocalNetworkHost()) "http://$s" else "https://$s"
         }
         if (!s.endsWith("/")) s = "$s/"
         return s
+    }
+
+    private fun String.isLocalNetworkHost(): Boolean {
+        val host = trim().trim('[', ']').lowercase()
+        if (host == "localhost" || host == "10.0.2.2") return true
+        if (host.startsWith("192.168.")) return true
+        if (host.startsWith("10.")) return true
+        val parts = host.split('.')
+        if (parts.size == 4 && parts[0] == "172") {
+            val second = parts[1].toIntOrNull()
+            if (second != null && second in 16..31) return true
+        }
+        return host == "::1" || host.startsWith("fd") || host.startsWith("fe80:")
     }
 
     companion object {

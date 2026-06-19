@@ -7,7 +7,10 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import dagger.hilt.EntryPoint
+import dagger.hilt.EntryPoints
 import dagger.hilt.android.HiltAndroidApp
+import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import timber.log.Timber
 import javax.inject.Inject
@@ -32,7 +35,7 @@ class MyCloudApplication :
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
-            .setWorkerFactory(workerFactory)
+            .setWorkerFactory(resolveWorkerFactory())
             .build()
 
     override fun onCreate() {
@@ -48,4 +51,17 @@ class MyCloudApplication :
                 add(OkHttpNetworkFetcherFactory(callFactory = { okHttpClient }))
             }
             .build()
+
+    private fun resolveWorkerFactory(): HiltWorkerFactory =
+        if (::workerFactory.isInitialized) {
+            workerFactory
+        } else {
+            EntryPoints.get(this, WorkManagerEntryPoint::class.java).workerFactory()
+        }
+
+    @EntryPoint
+    @dagger.hilt.InstallIn(SingletonComponent::class)
+    interface WorkManagerEntryPoint {
+        fun workerFactory(): HiltWorkerFactory
+    }
 }

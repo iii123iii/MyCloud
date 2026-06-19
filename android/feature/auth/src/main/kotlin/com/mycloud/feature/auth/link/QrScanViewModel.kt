@@ -126,9 +126,22 @@ class QrScanViewModel @Inject constructor(
         val host = uri.host?.lowercase() ?: return false
         return when (scheme) {
             "https" -> true
-            "http" -> host in LOCAL_HTTP_HOSTS
+            "http" -> host.isLocalNetworkHost()
             else -> false
         }
+    }
+
+    private fun String.isLocalNetworkHost(): Boolean {
+        val host = trim().trim('[', ']').lowercase()
+        if (host in LOCAL_HTTP_HOSTS) return true
+        if (host.startsWith("192.168.")) return true
+        if (host.startsWith("10.")) return true
+        val parts = host.split('.')
+        if (parts.size == 4 && parts[0] == "172") {
+            val second = parts[1].toIntOrNull()
+            if (second != null && second in 16..31) return true
+        }
+        return host.startsWith("fd") || host.startsWith("fe80:")
     }
 
     private data class QrPayload(val url: String, val code: String, val verifier: String)

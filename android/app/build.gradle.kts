@@ -16,8 +16,8 @@ android {
         applicationId = "com.mycloud.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Dev backend. 10.0.2.2 is the host loopback as seen from the emulator;
