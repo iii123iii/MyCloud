@@ -27,7 +27,6 @@ import {
 } from "@/lib/api";
 import { useTopic } from "@/components/ws-provider";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
@@ -52,9 +51,8 @@ interface ScannedInfo {
 
 // The payload encoded into the QR. The phone parses this JSON: `url` tells it
 // which server to talk to (auto-config), `code`+`verifier` authorise the claim.
-function qrPayload(ticket: DeviceLinkTicket, phoneUrl: string): string {
+function qrPayload(ticket: DeviceLinkTicket): string {
   const url =
-    phoneUrl.trim() ||
     ticket.url ||
     process.env.NEXT_PUBLIC_API_URL ||
     (typeof window !== "undefined" ? window.location.origin : "");
@@ -76,7 +74,6 @@ export function LinkDeviceView() {
   const [scanned, setScanned] = useState<ScannedInfo | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [phoneUrl, setPhoneUrl] = useState("");
 
   // Reset everything back to the start.
   const reset = useCallback(() => {
@@ -84,7 +81,6 @@ export function LinkDeviceView() {
     setPhase("idle");
     setScanned(null);
     setSecondsLeft(0);
-    setPhoneUrl("");
   }, []);
 
   const start = useCallback(async () => {
@@ -92,7 +88,6 @@ export function LinkDeviceView() {
     try {
       const t = await deviceLink.create();
       setTicket(t);
-      setPhoneUrl(t.url);
       setScanned(null);
       setPhase("waiting");
       setSecondsLeft(secondsUntil(t.expires_at));
@@ -251,17 +246,8 @@ export function LinkDeviceView() {
           {phase === "waiting" && ticket && (
             <div className="flex flex-col items-center gap-4 py-4">
               <div className="rounded-xl bg-white p-4 ring-1 ring-foreground/10">
-                <QRCodeSVG value={qrPayload(ticket, phoneUrl)} size={208} level="M" />
+                <QRCodeSVG value={qrPayload(ticket)} size={208} level="M" />
               </div>
-              <label className="w-full max-w-sm space-y-1.5 text-left text-xs text-muted-foreground">
-                <span>Phone server URL</span>
-                <Input
-                  value={phoneUrl}
-                  onChange={(event) => setPhoneUrl(event.target.value)}
-                  placeholder="http://192.168.1.142:8080"
-                  className="font-mono text-xs"
-                />
-              </label>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                 <span>Waiting for a device to scan…</span>

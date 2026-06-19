@@ -151,9 +151,9 @@ func TestPublicBackendURL_FromForwardedHeaders(t *testing.T) {
 	a := newTestApp(t)
 	r := httptest.NewRequest("GET", "http://backend:8080/", nil)
 	r.Header.Set("X-Forwarded-Proto", "https")
-	r.Header.Set("X-Forwarded-Host", "192.168.1.142:8443")
+	r.Header.Set("X-Forwarded-Host", "192.168.1.142:443")
 	got := a.publicBackendURL(r)
-	if got != "https://192.168.1.142:8443" {
+	if got != "http://192.168.1.142" {
 		t.Errorf("expected forwarded public URL, got %q", got)
 	}
 }

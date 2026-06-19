@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -316,6 +317,10 @@ func (a *App) publicBackendURL(r *http.Request) string {
 	if host == "" {
 		host = r.Host
 	}
+	if isPrivateHost(host) {
+		scheme = "http"
+		host = hostWithoutPort(host)
+	}
 	return strings.ToLower(scheme) + "://" + host
 }
 
@@ -337,6 +342,29 @@ func forwardedParam(header, key string) string {
 		return strings.Trim(strings.TrimSpace(value), `"`)
 	}
 	return ""
+}
+
+func isPrivateHost(value string) bool {
+	host := strings.ToLower(strings.Trim(hostWithoutPort(value), "[]"))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+func hostWithoutPort(value string) string {
+	host := strings.TrimSpace(value)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	if strings.Count(host, ":") > 1 {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Split(host, ":")[0]
 }
 
 func (a *App) lookupUsername(ctx interface {
