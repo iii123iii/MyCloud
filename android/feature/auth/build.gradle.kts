@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.mycloud.feature.auth"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26
@@ -41,10 +41,14 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.biometric)
+
+    // QR sign-in via Google Play Services Code Scanner (no bundled scanner model).
+    implementation(libs.play.services.code.scanner)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

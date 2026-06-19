@@ -23,4 +23,8 @@ data class Grant(
     val fileId: String?,
     val folderId: String?,
     val createdAtMillis: Long,
+    /** Display name of the shared item / the person who shared it (incoming grants). */
+    val fileName: String? = null,
+    val folderName: String? = null,
+    val granterName: String? = null,
 )

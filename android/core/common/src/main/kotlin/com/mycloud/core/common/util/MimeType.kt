@@ -14,6 +14,8 @@ object MimeType {
             mime == "application/pdf" -> FileKind.PDF
             mime.startsWith("text/") ||
                 mime == "application/json" ||
+                mime == "application/javascript" ||
+                mime == "application/x-javascript" ||
                 mime == "application/xml" -> FileKind.TEXT
             mime in archiveMimes -> FileKind.ARCHIVE
             else -> FileKind.OTHER
@@ -27,12 +29,23 @@ object MimeType {
             else -> false
         }
 
-    /** Uppercase extension badge from a filename (max 4 chars), like the web tiles. */
-    fun extensionBadge(name: String): String =
-        name.substringAfterLast('.', "").take(4).uppercase()
+    /**
+     * Uppercase extension badge from a filename (max 4 chars), like the web tiles.
+     * Returns "" when there's no real extension — handles blank/null names and
+     * dot-files (e.g. ".gitignore" has no extension, not "GITIG").
+     */
+    fun extensionBadge(name: String?): String {
+        val trimmed = name?.trim().orEmpty()
+        if (trimmed.isEmpty()) return ""
+        val dot = trimmed.lastIndexOf('.')
+        // No dot, or a leading-dot dot-file (".bashrc"), or a trailing dot → no ext.
+        if (dot <= 0 || dot == trimmed.lastIndex) return ""
+        return trimmed.substring(dot + 1).take(4).uppercase()
+    }
 
     private val archiveMimes = setOf(
         "application/zip",
+        "application/x-zip-compressed",
         "application/x-tar",
         "application/gzip",
         "application/x-7z-compressed",

@@ -19,7 +19,15 @@ object ByteFormatter {
         return String.format(locale, "%.1f %s", value, units[unit])
     }
 
-    /** Used / quota as a 0..1 fraction for quota bars; 0 when quota is unset. */
+    /**
+     * Used / quota as a 0..1 fraction for quota bars; 0 when quota is unset/unknown
+     * (<= 0) or used is unknown (< 0) — consistent with [format] treating negative
+     * sizes as "unknown".
+     */
     fun usedFraction(usedBytes: Long, quotaBytes: Long): Float =
-        if (quotaBytes <= 0) 0f else (usedBytes.toDouble() / quotaBytes).coerceIn(0.0, 1.0).toFloat()
+        if (quotaBytes <= 0 || usedBytes < 0) {
+            0f
+        } else {
+            (usedBytes.toDouble() / quotaBytes).coerceIn(0.0, 1.0).toFloat()
+        }
 }

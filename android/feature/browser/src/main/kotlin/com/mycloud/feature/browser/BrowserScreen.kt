@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.mycloud.feature.browser
 
 import android.content.Context
@@ -14,6 +16,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,16 +26,22 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -44,6 +53,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -57,10 +67,14 @@ import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FloatingActionButtonMenu
+import androidx.compose.material3.FloatingActionButtonMenuItem
+import androidx.compose.material3.ToggleFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -88,7 +102,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -110,7 +130,7 @@ import com.mycloud.core.model.TransferDirection
 import com.mycloud.core.model.TransferStatus
 import com.mycloud.core.model.ViewMode
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun BrowserScreen(
     modifier: Modifier = Modifier,
@@ -118,15 +138,26 @@ fun BrowserScreen(
     onOpenFile: (FileNode) -> Unit = {},
     onShareFile: (FileNode) -> Unit = {},
     onShareFolder: (Folder) -> Unit = {},
+    scrollToTopSignal: Int = 0,
 ) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val files = viewModel.files.collectAsLazyPagingItems()
+    val gridState = rememberLazyGridState()
+    val listState = rememberLazyListState()
+    // Re-tapping the Files tab scrolls the active (grid or list) view to the top.
+    LaunchedEffect(scrollToTopSignal) {
+        if (scrollToTopSignal > 0) {
+            if (ui.viewMode == ViewMode.GRID) gridState.animateScrollToItem(0)
+            else listState.animateScrollToItem(0)
+        }
+    }
     val transfers by viewModel.transfers.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showNewFolder by remember { mutableStateOf(false) }
     var showFabMenu by remember { mutableStateOf(false) }
     var showTransfers by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<RenameTarget?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     var pickerMode by remember { mutableStateOf<FolderPickerMode?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -195,6 +226,7 @@ fun BrowserScreen(
                     count = ui.selectionCount,
                     shareEnabled = singleSelection,
                     renameEnabled = singleSelection,
+                    starEnabled = selectedFiles.isNotEmpty(),
                     starred = allSelectedStarred,
                     onClose = viewModel::clearSelection,
                     onShare = ::shareSelection,
@@ -203,13 +235,15 @@ fun BrowserScreen(
                     onStar = { viewModel.starSelected(!allSelectedStarred) },
                     onMove = { pickerMode = FolderPickerMode.MOVE },
                     onCopy = { pickerMode = FolderPickerMode.COPY },
-                    onDelete = viewModel::deleteSelected,
+                    onDelete = { showDeleteConfirm = true },
                 )
             } else {
                 BrowserTopBar(
                     title = ui.title,
                     canGoBack = ui.canGoBack,
                     viewMode = ui.viewMode,
+                    sort = ui.sort,
+                    order = ui.order,
                     transferCount = transfers.count { it.status == TransferStatus.RUNNING || it.status == TransferStatus.QUEUED },
                     onTransfers = { showTransfers = true },
                     onBack = { viewModel.onBack() },
@@ -223,26 +257,38 @@ fun BrowserScreen(
             }
         },
         floatingActionButton = {
-            if (!ui.inSelectionMode) Box {
-                FloatingActionButton(onClick = { showFabMenu = true }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add")
-                }
-                DropdownMenu(expanded = showFabMenu, onDismissRequest = { showFabMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Upload files") },
-                        leadingIcon = { Icon(Icons.Filled.Upload, contentDescription = null) },
+            if (!ui.inSelectionMode) {
+                // Expressive FAB menu: the toggle button morphs Add ⇄ Close and
+                // springs the actions in/out using the theme's MotionScheme.
+                FloatingActionButtonMenu(
+                    expanded = showFabMenu,
+                    button = {
+                        ToggleFloatingActionButton(
+                            checked = showFabMenu,
+                            onCheckedChange = { showFabMenu = it },
+                        ) {
+                            Icon(
+                                imageVector = if (showFabMenu) Icons.Filled.Close else Icons.Filled.Add,
+                                contentDescription = if (showFabMenu) "Close menu" else "Add",
+                            )
+                        }
+                    },
+                ) {
+                    FloatingActionButtonMenuItem(
                         onClick = {
                             showFabMenu = false
                             uploadLauncher.launch(arrayOf("*/*"))
                         },
+                        icon = { Icon(Icons.Filled.Upload, contentDescription = null) },
+                        text = { Text("Upload files") },
                     )
-                    DropdownMenuItem(
-                        text = { Text("New folder") },
-                        leadingIcon = { Icon(Icons.Filled.CreateNewFolder, contentDescription = null) },
+                    FloatingActionButtonMenuItem(
                         onClick = {
                             showFabMenu = false
                             showNewFolder = true
                         },
+                        icon = { Icon(Icons.Filled.CreateNewFolder, contentDescription = null) },
+                        text = { Text("New folder") },
                     )
                 }
             }
@@ -255,19 +301,26 @@ fun BrowserScreen(
         ) {
             Column(Modifier.fillMaxSize()) {
                 if (ui.breadcrumbs.isNotEmpty()) {
-                    BreadcrumbRow(ui)
+                    BreadcrumbRow(ui, onNavigate = viewModel::navigateToBreadcrumb)
                 }
+                val refreshing = ui.isRefreshing || files.loadState.refresh is LoadState.Loading
                 PullToRefreshBox(
-                    isRefreshing = files.loadState.refresh is LoadState.Loading,
+                    isRefreshing = refreshing,
                     onRefresh = {
                         files.refresh()
                         viewModel.refresh()
                     },
                 ) {
-                    if (ui.viewMode == ViewMode.GRID) {
-                        FileGrid(ui, files, viewModel, onOpenFile)
+                    val isEmpty = files.itemCount == 0 &&
+                        ui.folders.isEmpty() &&
+                        files.loadState.refresh !is LoadState.Loading &&
+                        !ui.isRefreshing
+                    if (isEmpty) {
+                        EmptyFolderState()
+                    } else if (ui.viewMode == ViewMode.GRID) {
+                        FileGrid(ui, files, viewModel, onOpenFile, gridState)
                     } else {
-                        FileList(ui, files, viewModel, onOpenFile)
+                        FileList(ui, files, viewModel, onOpenFile, listState)
                     }
                 }
             }
@@ -276,11 +329,25 @@ fun BrowserScreen(
 
     if (showNewFolder) {
         NewFolderDialog(
-            onConfirm = {
-                viewModel.createFolder(it)
-                showNewFolder = false
+            onConfirm = { name ->
+                // Keep the dialog open until the server confirms; close only on success.
+                viewModel.createFolder(name) { ok -> if (ok) showNewFolder = false }
             },
             onDismiss = { showNewFolder = false },
+        )
+    }
+
+    if (showDeleteConfirm) {
+        val fileCount = selectedFiles.size
+        val folderCount = selectedFolders.size
+        DeleteConfirmDialog(
+            fileCount = fileCount,
+            folderCount = folderCount,
+            onConfirm = {
+                viewModel.deleteSelected()
+                showDeleteConfirm = false
+            },
+            onDismiss = { showDeleteConfirm = false },
         )
     }
 
@@ -325,11 +392,15 @@ private fun FileGrid(
     files: androidx.paging.compose.LazyPagingItems<FileNode>,
     viewModel: BrowserViewModel,
     onOpenFile: (FileNode) -> Unit,
+    state: LazyGridState,
 ) {
+    val haptics = LocalHapticFeedback.current
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 112.dp),
+        state = state,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+        // Bottom inset keeps the FAB from covering the final row.
+        contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 88.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -340,7 +411,10 @@ private fun FileGrid(
                 onClick = {
                     if (ui.inSelectionMode) viewModel.toggleFolderSelect(folder.id) else viewModel.openFolder(folder)
                 },
-                onLongClick = { viewModel.toggleFolderSelect(folder.id) },
+                onLongClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.toggleFolderSelect(folder.id)
+                },
                 modifier = Modifier.animateItem(),
             )
         }
@@ -353,10 +427,31 @@ private fun FileGrid(
                 onClick = {
                     if (ui.inSelectionMode) viewModel.toggleSelect(file.id) else onOpenFile(file)
                 },
-                onLongClick = { viewModel.toggleSelect(file.id) },
+                onLongClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.toggleSelect(file.id)
+                },
                 modifier = Modifier.animateItem(),
             )
         }
+        appendLoadStateItem(files)
+    }
+}
+
+/** Footer row shown while the next paging page loads, or to retry on error. */
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.appendLoadStateItem(
+    files: androidx.paging.compose.LazyPagingItems<FileNode>,
+) {
+    when (files.loadState.append) {
+        is LoadState.Loading -> item(span = { GridItemSpan(maxLineSpan) }) {
+            PagingFooter { LoadingIndicator(Modifier.size(28.dp)) }
+        }
+        is LoadState.Error -> item(span = { GridItemSpan(maxLineSpan) }) {
+            PagingFooter {
+                TextButton(onClick = { files.retry() }) { Text("Retry") }
+            }
+        }
+        else -> Unit
     }
 }
 
@@ -367,8 +462,15 @@ private fun FileList(
     files: androidx.paging.compose.LazyPagingItems<FileNode>,
     viewModel: BrowserViewModel,
     onOpenFile: (FileNode) -> Unit,
+    state: LazyListState,
 ) {
-    LazyColumn(Modifier.fillMaxSize()) {
+    val haptics = LocalHapticFeedback.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = state,
+        // Bottom inset keeps the FAB from covering the final row.
+        contentPadding = PaddingValues(bottom = 88.dp),
+    ) {
         items(ui.folders, key = { "folder:${it.id}" }) { folder ->
             val selected = folder.id in ui.selectedFolderIds
             ListItem(
@@ -381,11 +483,18 @@ private fun FileList(
                 },
                 modifier = Modifier
                     .animateItem()
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "Folder ${folder.name}" +
+                            if (selected) ", selected" else ""
+                    }
                     .combinedClickable(
                         onClick = {
                             if (ui.inSelectionMode) viewModel.toggleFolderSelect(folder.id) else viewModel.openFolder(folder)
                         },
-                        onLongClick = { viewModel.toggleFolderSelect(folder.id) },
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleFolderSelect(folder.id)
+                        },
                     ),
             )
         }
@@ -397,10 +506,66 @@ private fun FileList(
                 onClick = {
                     if (ui.inSelectionMode) viewModel.toggleSelect(file.id) else onOpenFile(file)
                 },
-                onLongClick = { viewModel.toggleSelect(file.id) },
+                onLongClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.toggleSelect(file.id)
+                },
+                onMore = { viewModel.toggleSelect(file.id) },
                 modifier = Modifier.animateItem(),
             )
         }
+        when (files.loadState.append) {
+            is LoadState.Loading -> item {
+                PagingFooter { LoadingIndicator(Modifier.size(28.dp)) }
+            }
+            is LoadState.Error -> item {
+                PagingFooter {
+                    TextButton(onClick = { files.retry() }) { Text("Retry") }
+                }
+            }
+            else -> Unit
+        }
+    }
+}
+
+@Composable
+private fun PagingFooter(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun EmptyFolderState() {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.FolderOpen,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(64.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "This folder is empty",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Use the + button to upload files or create a folder.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -410,6 +575,8 @@ private fun BrowserTopBar(
     title: String,
     canGoBack: Boolean,
     viewMode: ViewMode,
+    sort: SortKey,
+    order: SortOrder,
     transferCount: Int,
     onTransfers: () -> Unit,
     onBack: () -> Unit,
@@ -449,16 +616,25 @@ private fun BrowserTopBar(
                 Icon(Icons.Filled.Sort, contentDescription = "Sort")
             }
             DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                fun sortIcon(key: SortKey, ord: SortOrder): @Composable (() -> Unit)? =
+                    if (sort == key && order == ord) {
+                        { Icon(Icons.Filled.Check, contentDescription = "Selected") }
+                    } else {
+                        null
+                    }
                 DropdownMenuItem(
                     text = { Text("Name (A–Z)") },
+                    leadingIcon = sortIcon(SortKey.NAME, SortOrder.ASC),
                     onClick = { onSort(SortKey.NAME, SortOrder.ASC); sortOpen = false },
                 )
                 DropdownMenuItem(
                     text = { Text("Newest") },
+                    leadingIcon = sortIcon(SortKey.UPDATED, SortOrder.DESC),
                     onClick = { onSort(SortKey.UPDATED, SortOrder.DESC); sortOpen = false },
                 )
                 DropdownMenuItem(
                     text = { Text("Largest") },
+                    leadingIcon = sortIcon(SortKey.SIZE, SortOrder.DESC),
                     onClick = { onSort(SortKey.SIZE, SortOrder.DESC); sortOpen = false },
                 )
             }
@@ -467,19 +643,50 @@ private fun BrowserTopBar(
 }
 
 @Composable
-private fun BreadcrumbRow(ui: BrowserUiState) {
+private fun BreadcrumbRow(ui: BrowserUiState, onNavigate: (String?) -> Unit) {
+    val scrollState = rememberScrollState()
+    // Keep the deepest crumb visible as the path grows.
+    LaunchedEffect(ui.breadcrumbs.size) { scrollState.animateScrollTo(scrollState.maxValue) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .horizontalScroll(scrollState)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        BreadcrumbSegment(
+            label = "My Files",
+            isCurrent = ui.breadcrumbs.isEmpty(),
+            onClick = { onNavigate(null) },
+        )
+        ui.breadcrumbs.forEachIndexed { index, crumb ->
+            Text(
+                "/",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            BreadcrumbSegment(
+                label = crumb.name,
+                isCurrent = index == ui.breadcrumbs.lastIndex,
+                onClick = { onNavigate(crumb.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun BreadcrumbSegment(label: String, isCurrent: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = !isCurrent) {
         Text(
-            text = "My Files / " + ui.breadcrumbs.joinToString(" / ") { it.name },
+            label,
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (isCurrent) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.primary
+            },
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -497,7 +704,11 @@ private fun FolderGridCard(
     // Mirror FileGridCard's structure (same thumbnail aspect + name row) so folder
     // and file tiles are identical heights and the grid has no uneven gaps.
     Card(
-        modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = modifier
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Folder ${folder.name}" + if (selected) ", selected" else ""
+            }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         border = border,
     ) {
         Column {
@@ -541,7 +752,13 @@ private fun FileGridCard(
         null
     }
     Card(
-        modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = modifier
+            .semantics(mergeDescendants = true) {
+                contentDescription = file.name +
+                    (if (file.isStarred) ", starred" else "") +
+                    (if (selected) ", selected" else "")
+            }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         border = border,
     ) {
         Column {
@@ -596,6 +813,7 @@ private fun FileListRow(
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onMore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     ListItem(
@@ -605,12 +823,17 @@ private fun FileListRow(
             Icon(fileKindIcon(MimeType.kindOf(file.mimeType)), contentDescription = null)
         },
         trailingContent = {
-            if (file.isStarred) {
-                Icon(
-                    Icons.Filled.Star,
-                    contentDescription = "Starred",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (file.isStarred) {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                IconButton(onClick = onMore) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "Actions for ${file.name}")
+                }
             }
         },
         colors = if (selected) {
@@ -618,7 +841,13 @@ private fun FileListRow(
         } else {
             ListItemDefaults.colors()
         },
-        modifier = modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = modifier
+            .semantics(mergeDescendants = true) {
+                contentDescription = "${file.name}, ${ByteFormatter.format(file.sizeBytes)}" +
+                    (if (file.isStarred) ", starred" else "") +
+                    (if (selected) ", selected" else "")
+            }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     )
 }
 
@@ -633,6 +862,7 @@ private fun SelectionTopBar(
     count: Int,
     shareEnabled: Boolean,
     renameEnabled: Boolean,
+    starEnabled: Boolean,
     starred: Boolean,
     onClose: () -> Unit,
     onShare: () -> Unit,
@@ -673,6 +903,7 @@ private fun SelectionTopBar(
                 }
                 DropdownMenuItem(
                     text = { Text(if (starred) "Unstar" else "Star") },
+                    enabled = starEnabled,
                     leadingIcon = {
                         Icon(
                             if (starred) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -709,8 +940,54 @@ private fun SelectionTopBar(
 }
 
 @Composable
+private fun DeleteConfirmDialog(
+    fileCount: Int,
+    folderCount: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val total = fileCount + folderCount
+    val what = when {
+        fileCount > 0 && folderCount > 0 -> "$total item${plural(total)}"
+        folderCount > 0 -> "$folderCount folder${plural(folderCount)}"
+        else -> "$fileCount file${plural(fileCount)}"
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete $what?") },
+        text = {
+            Text(
+                if (folderCount > 0) {
+                    "Folders and everything inside them will be deleted. This can't be undone."
+                } else {
+                    "This can't be undone."
+                },
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun plural(n: Int): String = if (n == 1) "" else "s"
+
+/** Characters the server rejects in file/folder names; flagged inline before submit. */
+private const val FORBIDDEN_NAME_CHARS = "/\\:*?\"<>|"
+
+private fun nameError(name: String): String? = when {
+    name.isBlank() -> null
+    name.any { it in FORBIDDEN_NAME_CHARS } -> "Can't contain / \\ : * ? \" < > |"
+    else -> null
+}
+
+@Composable
 private fun NewFolderDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
+    val error = nameError(name)
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New folder") },
@@ -719,11 +996,16 @@ private fun NewFolderDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) 
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
+                isError = error != null,
+                supportingText = error?.let { { Text(it) } },
                 label = { Text("Folder name") },
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Create") }
+            TextButton(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank() && error == null,
+            ) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -731,7 +1013,11 @@ private fun NewFolderDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) 
 
 @Composable
 private fun RenameDialog(initial: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var name by remember { mutableStateOf(initial) }
+    // Start with the cursor at the end of the prefilled name instead of position 0.
+    var name by remember {
+        mutableStateOf(TextFieldValue(initial, selection = TextRange(initial.length)))
+    }
+    val error = nameError(name.text)
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Rename") },
@@ -740,11 +1026,16 @@ private fun RenameDialog(initial: String, onConfirm: (String) -> Unit, onDismiss
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
+                isError = error != null,
+                supportingText = error?.let { { Text(it) } },
                 label = { Text("Name") },
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Rename") }
+            TextButton(
+                onClick = { onConfirm(name.text) },
+                enabled = name.text.isNotBlank() && error == null,
+            ) { Text("Rename") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -762,23 +1053,27 @@ private fun fileKindIcon(kind: FileKind): ImageVector = when (kind) {
 @Composable
 private fun TransfersSheet(transfers: List<Transfer>, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
+        LazyColumn(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp),
         ) {
-            Text("Transfers", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(12.dp))
-            if (transfers.isEmpty()) {
-                Text(
-                    "No transfers yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                transfers.forEach { TransferRow(it) }
+            item {
+                Text("Transfers", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(12.dp))
             }
-            Spacer(Modifier.height(24.dp))
+            if (transfers.isEmpty()) {
+                item {
+                    Text(
+                        "No transfers yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                items(transfers, key = { it.id }) { TransferRow(it) }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
         }
     }
 }

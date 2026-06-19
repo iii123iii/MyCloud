@@ -88,6 +88,11 @@ func (a *App) routes() chi.Router {
 	loginIPLimit := a.rateLimit("login_ip", a.Config.RateLimitLoginPerMin, time.Minute, keyByIP)
 	loginUserLimit := a.rateLimit("login_user", a.Config.RateLimitLoginPerUserMin, time.Minute, keyByLoginField("email"))
 	registerLimit := a.rateLimit("register", a.Config.RateLimitRegisterPerHour, time.Hour, keyByIP)
+	// Device-link claim/poll are unauthenticated (the phone has no token yet).
+	// Bucket per IP to blunt verifier brute force (defence in depth — the
+	// verifier is 256-bit) and to keep the short-window poll loop from being
+	// weaponised. Reuses the login-IP capacity since the call pattern is similar.
+	deviceClaimLimit := a.rateLimit("device_claim", a.Config.RateLimitLoginPerMin, time.Minute, keyByIP)
 	publicUploadLimit := a.rateLimit("public_upload", a.Config.RateLimitPublicUploadHour, time.Hour, keyByIP)
 	// Share-password limit: applied to the three public share/upload-request
 	// endpoints that accept X-Share-Password. Buckets per IP+token-prefix so
@@ -138,6 +143,13 @@ func (a *App) routes() chi.Router {
 			// Per-device sessions.
 			authed.Get("/me/sessions", a.handleListMySessions)
 			authed.Delete("/me/sessions/{jti}", a.handleRevokeMySession)
+			// QR device linking — the authenticated browser mints a pairing,
+			// watches its status, and approves/denies the scanning phone. The
+			// unauthenticated claim/poll endpoints live in the public area below.
+			authed.Post("/device-link/create", a.handleDeviceLinkCreate)
+			authed.Get("/device-link/{code}", a.handleDeviceLinkStatus)
+			authed.Post("/device-link/{code}:approve", a.handleDeviceLinkApprove)
+			authed.Post("/device-link/{code}:deny", a.handleDeviceLinkDeny)
 			// Personal access tokens for API/automation auth.
 			authed.Get("/me/tokens", a.handleListMyTokens)
 			authed.Post("/me/tokens", a.handleCreateMyToken)
@@ -303,6 +315,12 @@ func (a *App) routes() chi.Router {
 		// seconds on a single host (bcrypt comparison cost notwithstanding).
 		api.With(sharePwdLimit).Get("/public/shares/{token}", a.handleResolveShare)
 		api.With(sharePwdLimit).Get("/public/shares/{token}:download", a.handleDownloadShare)
+
+		// QR device linking — the scanning phone is not yet authenticated, so
+		// claim/poll are public. Authority comes from the 256-bit verifier in
+		// the QR (only the genuine scanner holds it) plus the browser approval.
+		api.With(deviceClaimLimit).Post("/device-link/claim", a.handleDeviceLinkClaim)
+		api.With(deviceClaimLimit).Post("/device-link/poll", a.handleDeviceLinkPoll)
 
 		// Presigned-token download (no Bearer required; HMAC carries authority).
 		api.Get("/dl/{token}", a.handlePresignedDownload)

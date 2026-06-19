@@ -102,10 +102,11 @@ func (a *App) handlePresignedDownload(w http.ResponseWriter, r *http.Request) {
 		fileID, purpose)
 
 	var name, mimeType, encKey, iv, tag, path string
+	var sizeBytes int64
 	err := a.DB.QueryRowContext(r.Context(), `
-		SELECT name, mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path
+		SELECT name, mime_type, encryption_key_enc, encryption_iv, encryption_tag, storage_path, size_bytes
 		FROM files WHERE id=? AND is_deleted=0`, fileID,
-	).Scan(&name, &mimeType, &encKey, &iv, &tag, &path)
+	).Scan(&name, &mimeType, &encKey, &iv, &tag, &path, &sizeBytes)
 	if err == sql.ErrNoRows {
 		httpapi.Error(w, http.StatusNotFound, "not_found", "file not found")
 		return
@@ -121,12 +122,10 @@ func (a *App) handlePresignedDownload(w http.ResponseWriter, r *http.Request) {
 		httpapi.Error(w, http.StatusInternalServerError, "crypto_error", err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Disposition", `inline; filename="`+sanitizeFilename(name)+`"`)
-	if err := storage.DecryptFileToWriter(path, w, fileKey); err != nil {
-		// Headers already written.
-		return
-	}
+	// Inline disposition + Range support: this is the endpoint embedded media
+	// tags (<video>/<audio>/<img>) hit directly, so seekable streaming of large
+	// videos flows through here.
+	serveDecryptedBlob(w, r, path, fileKey, name, mimeType, sizeBytes, "inline")
 }
 
 // signPresignToken builds the token described in the package comment.

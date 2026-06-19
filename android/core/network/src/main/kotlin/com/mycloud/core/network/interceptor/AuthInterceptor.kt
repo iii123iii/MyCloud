@@ -48,6 +48,9 @@ class AuthInterceptor(
             "/setup/",
             "/public/",
             "/dl/",
+            // QR device linking — the scanning phone is not yet authenticated.
+            "/device-link/claim",
+            "/device-link/poll",
         )
     }
 }

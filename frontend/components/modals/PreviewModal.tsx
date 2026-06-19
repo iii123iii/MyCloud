@@ -220,6 +220,9 @@ export function PreviewModal({
   version, onClearVersion, onRestored, onEdit,
 }: Props) {
   const [blobUrl, setBlobUrl]                     = useState<string | null>(null);
+  // Presigned, range-capable streaming URL for video/audio of the current file
+  // (not versions). Streamed by the media element directly — never blobbed.
+  const [streamUrl, setStreamUrl]                 = useState<string | null>(null);
   const [textContent, setTextContent]             = useState<string | null>(null);
   const [highlightedHtml, setHighlightedHtml]     = useState<string | null>(null);
   const [csvData, setCsvData]                     = useState<{ rows: string[][]; truncated: boolean } | null>(null);
@@ -261,6 +264,7 @@ export function PreviewModal({
     if (!open) return;
     setLoading(true);
     setBlobUrl(null);
+    setStreamUrl(null);
     setTextContent(null);
     setHighlightedHtml(null);
     setCsvData(null);
@@ -271,12 +275,39 @@ export function PreviewModal({
     setPreviewNotice(null);
 
     const mime = file.mime_type;
-    const previewNotice = getPreviewSizeLimitMessage(file);
 
+    // Video/audio of the current file stream via a presigned, range-capable URL
+    // — no size cap, no in-memory blob. (Historical versions fall through to the
+    // gated blob path below since presign is file-scoped, not version-scoped.)
+    const previewNotice = isStreamableMedia ? null : getPreviewSizeLimitMessage(file);
     if (previewNotice) {
       setPreviewNotice(previewNotice);
       setLoading(false);
       return;
+    }
+
+    if (isStreamableMedia) {
+      if (mime.startsWith("video/")) {
+        // VideoPlayer presigns + streams (and handles HLS fallback) itself.
+        setLoading(false);
+        return;
+      }
+      // Audio: presign once and let the native <audio> element stream it.
+      let cancelled = false;
+      filesApi
+        .presign(file.id, 3600)
+        .then(({ url }) => {
+          if (!cancelled) setStreamUrl(url);
+        })
+        .catch(() => {
+          if (!cancelled) setFetchError("Failed to load audio for playback.");
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
 
     const token = tokenStore.getAccess();
@@ -409,6 +440,12 @@ export function PreviewModal({
   const mime = file.mime_type;
   // Word docs get a full-page Google-Docs-style layout; everything else keeps the centred card layout.
   const isDocPreview = PREVIEWABLE_WORD_TYPES.has(mime);
+  // Current-file video/audio stream from a presigned URL via the media element
+  // (VideoPlayer self-presigns; audio sets streamUrl). They render no blob and
+  // none of the other content states, so they must mark the body "ready" on
+  // their own — otherwise the opacity gate below keeps the player invisible and
+  // you get a blank screen with audio still playing.
+  const isStreamableMedia = !isVersionView && (mime.startsWith("video/") || mime.startsWith("audio/"));
   const editable = !isVersionView && !!onEdit && getEditMode(file) !== null;
 
   const handleRestoreVersion = async () => {
@@ -427,6 +464,8 @@ export function PreviewModal({
   const contentReady =
     !loading && (
       blobUrl !== null ||
+      streamUrl !== null ||
+      isStreamableMedia ||
       textContent !== null ||
       highlightedHtml !== null ||
       csvData !== null ||
@@ -691,23 +730,26 @@ export function PreviewModal({
               </div>
             )}
 
-            {/* Videos route through the HLS-aware player. HLS playlist
-                is generated on demand server-side; the player falls
-                back to direct streaming if HLS isn't available, so MP4/WebM
-                still play even with ffmpeg disabled. */}
-            {!loading && mime.startsWith("video/") && (
-              <VideoPlayer
-                fileId={file.id}
-                mimeType={mime}
-                fallbackUrl={blobUrl ?? ""}
-              />
+            {/* Current-file video: range-streamed via a presigned URL (instant
+                seek, no full download). The player falls back to HLS only when
+                the browser can't decode the codec natively. */}
+            {!loading && mime.startsWith("video/") && !isVersionView && (
+              <VideoPlayer fileId={file.id} mimeType={mime} />
             )}
 
-            {/* Audio */}
-            {!loading && blobUrl && mime.startsWith("audio/") && (
+            {/* Historical version video: presign is file-scoped, so versions use
+                the size-gated blob path. */}
+            {!loading && mime.startsWith("video/") && isVersionView && blobUrl && (
+              <video controls playsInline className="w-full max-h-[80vh] bg-black" src={blobUrl}>
+                Your browser cannot play this {mime} file directly.
+              </video>
+            )}
+
+            {/* Audio: presigned stream for the current file, blob for versions. */}
+            {!loading && mime.startsWith("audio/") && (streamUrl ?? blobUrl) && (
               <div className="w-full max-w-lg space-y-3">
                 <p className="text-sm font-medium text-center">{file.name}</p>
-                <audio src={blobUrl} controls className="w-full" />
+                <audio src={streamUrl ?? blobUrl ?? undefined} controls className="w-full" />
               </div>
             )}
 

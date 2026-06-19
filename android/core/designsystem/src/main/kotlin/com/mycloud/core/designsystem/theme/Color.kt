@@ -33,6 +33,15 @@ private val md_error_light = Color(0xFFBA1A1A)
 private val md_onError_light = Color(0xFFFFFFFF)
 private val md_errorContainer_light = Color(0xFFFFDAD6)
 private val md_onErrorContainer_light = Color(0xFF410002)
+// Neutral roles, faintly tinted toward the brand seed so surfaces feel cohesive.
+private val md_background_light = Color(0xFFFCF8FF)
+private val md_onBackground_light = Color(0xFF1B1B21)
+private val md_surface_light = Color(0xFFFCF8FF)
+private val md_onSurface_light = Color(0xFF1B1B21)
+private val md_surfaceVariant_light = Color(0xFFE4E1EC)
+private val md_onSurfaceVariant_light = Color(0xFF47464F)
+private val md_outline_light = Color(0xFF787680)
+private val md_outlineVariant_light = Color(0xFFC8C5D0)
 
 // ---- Dark ----
 private val md_primary_dark = Color(0xFFC6BFFF)
@@ -51,6 +60,15 @@ private val md_error_dark = Color(0xFFFFB4AB)
 private val md_onError_dark = Color(0xFF690005)
 private val md_errorContainer_dark = Color(0xFF93000A)
 private val md_onErrorContainer_dark = Color(0xFFFFDAD6)
+// Neutral roles, faintly tinted toward the brand seed.
+private val md_background_dark = Color(0xFF131318)
+private val md_onBackground_dark = Color(0xFFE4E1E9)
+private val md_surface_dark = Color(0xFF131318)
+private val md_onSurface_dark = Color(0xFFE4E1E9)
+private val md_surfaceVariant_dark = Color(0xFF47464F)
+private val md_onSurfaceVariant_dark = Color(0xFFC8C5D0)
+private val md_outline_dark = Color(0xFF928F9A)
+private val md_outlineVariant_dark = Color(0xFF47464F)
 
 val LightColors = lightColorScheme(
     primary = md_primary_light,
@@ -69,6 +87,14 @@ val LightColors = lightColorScheme(
     onError = md_onError_light,
     errorContainer = md_errorContainer_light,
     onErrorContainer = md_onErrorContainer_light,
+    background = md_background_light,
+    onBackground = md_onBackground_light,
+    surface = md_surface_light,
+    onSurface = md_onSurface_light,
+    surfaceVariant = md_surfaceVariant_light,
+    onSurfaceVariant = md_onSurfaceVariant_light,
+    outline = md_outline_light,
+    outlineVariant = md_outlineVariant_light,
 )
 
 val DarkColors = darkColorScheme(
@@ -88,4 +114,12 @@ val DarkColors = darkColorScheme(
     onError = md_onError_dark,
     errorContainer = md_errorContainer_dark,
     onErrorContainer = md_onErrorContainer_dark,
+    background = md_background_dark,
+    onBackground = md_onBackground_dark,
+    surface = md_surface_dark,
+    onSurface = md_onSurface_dark,
+    surfaceVariant = md_surfaceVariant_dark,
+    onSurfaceVariant = md_onSurfaceVariant_dark,
+    outline = md_outline_dark,
+    outlineVariant = md_outlineVariant_dark,
 )

@@ -10,12 +10,12 @@ plugins {
 
 android {
     namespace = "com.mycloud.android"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.mycloud.android"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -28,6 +28,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
+            ndk {
+                abiFilters += listOf("arm64-v8a")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -89,6 +93,10 @@ dependencies {
     // exposes Room only as `implementation`, so it isn't visible transitively.
     implementation(libs.room.runtime)
 
+    // Force a 16 KB-page-aligned graphics-path (Compose pulls an older one
+    // transitively whose libandroidx.graphics.path.so isn't 16 KB-aligned).
+    implementation(libs.androidx.graphics.path)
+
     // Authenticated image loading (shares the app's OkHttp client).
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
@@ -98,6 +106,8 @@ dependencies {
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

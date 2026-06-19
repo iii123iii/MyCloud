@@ -3,6 +3,7 @@ package com.mycloud.core.network.result
 import com.mycloud.core.common.result.NetworkResult
 import com.mycloud.core.network.envelope.Envelope
 import com.mycloud.core.network.envelope.ErrorBody
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
 import retrofit2.Response
@@ -35,6 +36,8 @@ suspend fun <T> safeApiCall(
     }
 } catch (io: IOException) {
     NetworkResult.NetworkError(io)
+} catch (cancelled: CancellationException) {
+    throw cancelled
 } catch (t: Throwable) {
     NetworkResult.NetworkError(t)
 }
@@ -52,6 +55,8 @@ suspend fun safeUnitApiCall(
     }
 } catch (io: IOException) {
     NetworkResult.NetworkError(io)
+} catch (cancelled: CancellationException) {
+    throw cancelled
 } catch (t: Throwable) {
     NetworkResult.NetworkError(t)
 }

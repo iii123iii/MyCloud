@@ -1,0 +1,1619 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyCloud Review Findings</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #eef4f8;
+      --ink: #171b22;
+      --muted: #667085;
+      --line: #d8dee6;
+      --shadow: 0 14px 35px rgba(23, 27, 34, 0.08);
+      --critical: #be123c;
+      --high: #c2410c;
+      --medium: #b45309;
+      --low: #2563eb;
+      --ok: #0f766e;
+      --web: #2563eb;
+      --backend: #0f766e;
+      --android: #7c3aed;
+      --desktop: #b45309;
+      --ops: #be123c;
+      --focus: #111827;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(238, 244, 248, 0.9), rgba(246, 247, 249, 1) 360px),
+        var(--bg);
+      color: var(--ink);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 28px;
+      border-bottom: 1px solid rgba(216, 222, 230, 0.85);
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background:
+        linear-gradient(135deg, #0f766e 0%, #2563eb 54%, #be123c 100%);
+      box-shadow: 0 10px 24px rgba(15, 118, 110, 0.22);
+      flex: 0 0 auto;
+    }
+
+    .mark svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    .title {
+      font-size: 17px;
+      line-height: 1.2;
+      font-weight: 760;
+      letter-spacing: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .nav {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      overflow-x: auto;
+    }
+
+    .nav button,
+    .ghost-button {
+      height: 36px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .nav button[aria-selected="true"] {
+      border-color: var(--focus);
+      background: var(--focus);
+      color: #fff;
+    }
+
+    .wrap {
+      width: min(1400px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 28px 0 52px;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .hero-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero-head {
+      display: grid;
+      gap: 8px;
+    }
+
+    .hero-head h2 {
+      font-size: clamp(28px, 4vw, 48px);
+      line-height: 1.02;
+      letter-spacing: 0;
+      max-width: 760px;
+    }
+
+    .hero-head p {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+      max-width: 760px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      min-height: 96px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      display: grid;
+      align-content: space-between;
+      gap: 8px;
+    }
+
+    .metric strong {
+      font-size: 30px;
+      line-height: 1;
+    }
+
+    .metric span {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .risk-board {
+      background: #17202a;
+      color: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 14px;
+      min-height: 300px;
+    }
+
+    .risk-board h3 {
+      font-size: 15px;
+      letter-spacing: 0;
+      font-weight: 720;
+    }
+
+    .bars {
+      display: grid;
+      gap: 12px;
+      align-content: center;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 90px minmax(120px, 1fr) 34px;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 12px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.16);
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: inherit;
+    }
+
+    .bar.critical { background: #fb7185; }
+    .bar.high { background: #fdba74; }
+    .bar.medium { background: #fde68a; }
+    .bar.low { background: #93c5fd; }
+
+    .toolbar {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto auto auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .search {
+      position: relative;
+    }
+
+    .search svg {
+      position: absolute;
+      left: 13px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      width: 18px;
+      height: 18px;
+    }
+
+    .search input,
+    select {
+      width: 100%;
+      height: 42px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      outline: none;
+    }
+
+    .search input {
+      padding: 0 14px 0 42px;
+    }
+
+    select {
+      padding: 0 36px 0 12px;
+    }
+
+    .content {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .filters {
+      position: sticky;
+      top: 78px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 14px;
+    }
+
+    .filter-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .filter-title {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 760;
+      text-transform: uppercase;
+    }
+
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      min-height: 32px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      color: var(--ink);
+    }
+
+    .chip[data-active="true"] {
+      border-color: var(--focus);
+      background: var(--focus);
+      color: #fff;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: currentColor;
+      flex: 0 0 auto;
+    }
+
+    .findings {
+      display: grid;
+      gap: 12px;
+    }
+
+    .count-line {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 0 2px 2px;
+    }
+
+    .finding {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-left: 6px solid var(--medium);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .finding[data-severity="Critical"] { border-left-color: var(--critical); }
+    .finding[data-severity="P0"] { border-left-color: var(--critical); }
+    .finding[data-severity="High"] { border-left-color: var(--high); }
+    .finding[data-severity="P1"] { border-left-color: var(--high); }
+    .finding[data-severity="Medium"] { border-left-color: var(--medium); }
+    .finding[data-severity="P2"] { border-left-color: var(--medium); }
+    .finding[data-severity="Low"] { border-left-color: var(--low); }
+
+    .finding-button {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 16px 18px;
+      display: grid;
+      gap: 10px;
+      color: inherit;
+    }
+
+    .finding-top {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .finding-title {
+      font-weight: 760;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      justify-content: flex-end;
+      flex: 0 0 auto;
+    }
+
+    .badge {
+      min-height: 26px;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      background: #f9fafb;
+      color: var(--ink);
+    }
+
+    .badge.severity-critical,
+    .badge.severity-p0 { color: var(--critical); background: #fff1f2; border-color: #fecdd3; }
+    .badge.severity-high,
+    .badge.severity-p1 { color: var(--high); background: #fff7ed; border-color: #fed7aa; }
+    .badge.severity-medium,
+    .badge.severity-p2 { color: var(--medium); background: #fffbeb; border-color: #fde68a; }
+    .badge.severity-low { color: var(--low); background: #eff6ff; border-color: #bfdbfe; }
+
+    .summary {
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 14px;
+      max-width: 900px;
+    }
+
+    .details {
+      display: none;
+      border-top: 1px solid var(--line);
+      padding: 16px 18px 18px;
+      background: #fbfcfd;
+    }
+
+    .finding[data-open="true"] .details {
+      display: grid;
+      gap: 14px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(240px, 0.55fr);
+      gap: 14px;
+    }
+
+    .detail-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 13px;
+      display: grid;
+      gap: 9px;
+    }
+
+    .detail-box h4 {
+      margin: 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0;
+    }
+
+    .detail-box p,
+    .detail-box li {
+      font-size: 14px;
+      line-height: 1.48;
+    }
+
+    .detail-box ul {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 7px;
+    }
+
+    .path-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .path {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      background: #f6f7f9;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #293241;
+    }
+
+    .path span {
+      overflow-wrap: anywhere;
+    }
+
+    .copy {
+      height: 28px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      padding: 0 8px;
+      font-size: 12px;
+    }
+
+    .views {
+      display: none;
+    }
+
+    .views[data-active="findings"],
+    .views[data-active="roadmap"],
+    .views[data-active="verification"] {
+      display: block;
+    }
+
+    .view-pane {
+      display: none;
+    }
+
+    .views[data-active="findings"] .pane-findings,
+    .views[data-active="roadmap"] .pane-roadmap,
+    .views[data-active="verification"] .pane-verification {
+      display: block;
+    }
+
+    .roadmap-layout {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .lane {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .lane header {
+      padding: 15px;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      gap: 4px;
+    }
+
+    .lane header h3 {
+      font-size: 16px;
+    }
+
+    .lane header p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .road-items {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .road-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+      display: grid;
+      gap: 7px;
+    }
+
+    .road-item strong {
+      font-size: 14px;
+    }
+
+    .road-item span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .verify-grid {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .verify-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 9px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .status.pass { color: var(--ok); background: #ecfdf5; border: 1px solid #99f6e4; }
+    .status.fail { color: var(--critical); background: #fff1f2; border: 1px solid #fecdd3; }
+    .status.blocked { color: var(--medium); background: #fffbeb; border: 1px solid #fde68a; }
+
+    .command {
+      border-radius: 8px;
+      background: #111827;
+      color: #f9fafb;
+      padding: 10px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .empty {
+      display: none;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+      padding: 28px;
+      text-align: center;
+    }
+
+    .empty[data-show="true"] {
+      display: block;
+    }
+
+    .footer-note {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 1050px) {
+      .overview,
+      .content,
+      .detail-grid,
+      .roadmap-layout,
+      .verify-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .filters {
+        position: static;
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .topbar {
+        align-items: stretch;
+        flex-direction: column;
+        padding: 12px;
+      }
+
+      .wrap {
+        width: min(100vw - 24px, 1400px);
+        padding-top: 14px;
+      }
+
+      .metric-grid,
+      .toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .finding-top {
+        display: grid;
+      }
+
+      .badges {
+        justify-content: flex-start;
+      }
+
+      .path {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M6.5 18.5h10.25a4.75 4.75 0 0 0 .7-9.45 6 6 0 0 0-11.38 1.38A4.05 4.05 0 0 0 6.5 18.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M9 14h6M12 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="title">MyCloud Review Findings</div>
+          <div class="subtitle">Interactive report generated from multi-agent code review</div>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Report sections">
+        <button data-nav="findings" aria-selected="true">Findings</button>
+        <button data-nav="roadmap" aria-selected="false">Roadmap</button>
+        <button data-nav="verification" aria-selected="false">Verification</button>
+      </nav>
+    </header>
+
+    <main class="wrap">
+      <section class="overview">
+        <div class="hero-panel">
+          <div class="hero-head">
+            <h2>Security, lifecycle, and sync risks across the full stack.</h2>
+            <p>Use the controls below to slice by severity, app surface, and text. Click a finding to expand the evidence, reproduction thought process, and suggested fix.</p>
+          </div>
+          <div class="metric-grid" aria-label="Review metrics">
+            <div class="metric"><strong id="metricTotal">0</strong><span>Total findings</span></div>
+            <div class="metric"><strong id="metricCritical">0</strong><span>Critical or P0</span></div>
+            <div class="metric"><strong id="metricHigh">0</strong><span>High or P1</span></div>
+            <div class="metric"><strong>6</strong><span>Review agents used</span></div>
+          </div>
+        </div>
+        <aside class="risk-board" aria-label="Risk distribution">
+          <h3>Risk Distribution</h3>
+          <div class="bars" id="riskBars"></div>
+        </aside>
+      </section>
+
+      <section class="views" data-active="findings">
+        <div class="view-pane pane-findings">
+          <div class="toolbar" aria-label="Finding controls">
+            <label class="search">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="m21 21-4.2-4.2M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <input id="searchInput" type="search" placeholder="Search findings, files, features..." />
+            </label>
+            <select id="sortSelect" aria-label="Sort findings">
+              <option value="severity">Sort by severity</option>
+              <option value="surface">Sort by surface</option>
+              <option value="title">Sort by title</option>
+            </select>
+            <button class="ghost-button" id="expandAll">Expand all</button>
+            <button class="ghost-button" id="resetFilters">Reset</button>
+          </div>
+
+          <div class="content">
+            <aside class="filters" aria-label="Filters">
+              <div class="filter-group">
+                <div class="filter-title">Severity</div>
+                <div class="chip-list" id="severityFilters"></div>
+              </div>
+              <div class="filter-group">
+                <div class="filter-title">Surface</div>
+                <div class="chip-list" id="surfaceFilters"></div>
+              </div>
+              <div class="filter-group">
+                <div class="filter-title">Priority Queue</div>
+                <button class="ghost-button" id="showTopRisks">Show top risks</button>
+              </div>
+            </aside>
+
+            <section>
+              <div class="count-line" id="resultCount"></div>
+              <div class="findings" id="findingsList"></div>
+              <div class="empty" id="emptyState" data-show="false">No findings match the current filters.</div>
+            </section>
+          </div>
+        </div>
+
+        <div class="view-pane pane-roadmap">
+          <div class="roadmap-layout" id="roadmap"></div>
+        </div>
+
+        <div class="view-pane pane-verification">
+          <div class="verify-grid" id="verification"></div>
+        </div>
+      </section>
+
+      <p class="footer-note">Generated on 2026-06-13. Review-only pass; source files were not modified.</p>
+    </main>
+  </div>
+
+  <script>
+    const findings = [
+      {
+        title: "Unauthenticated updater can control the host Docker daemon",
+        severity: "Critical",
+        surface: "Ops",
+        summary: "The updater mounts the repo and Docker socket, then exposes an unauthenticated update endpoint reachable from the compose network.",
+        impact: "A compromised container or network peer can trigger code pulls, builds, and host Docker actions.",
+        fix: "Add updater auth or mTLS, isolate the updater network, and replace raw docker.sock with a constrained update runner or socket proxy.",
+        tests: "Add an integration test that unauthenticated update requests are rejected and that only signed, authorized update requests can start a job.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/docker-compose.yml:72",
+          "C:/Users/omrio/Desktop/projects/MyCloud/docker-compose.yml:73",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/server.py:127",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/server.py:186"
+        ]
+      },
+      {
+        title: "Android clients effectively disable TLS verification",
+        severity: "P0",
+        surface: "Android",
+        summary: "Network clients install a trust-all certificate manager and hostname verifier, while cleartext traffic is enabled.",
+        impact: "Login, refresh tokens, transfers, thumbnails, and API calls are exposed to man-in-the-middle attacks.",
+        fix: "Remove trust-all defaults. Support self-signed servers through explicit certificate pinning or custom CA import, ideally dev-only unless the user opts in per host.",
+        tests: "Add network tests that invalid certificates fail by default and that an explicitly pinned certificate is required for self-signed servers.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/network/src/main/kotlin/com/mycloud/core/network/di/NetworkModule.kt:72",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/network/src/main/kotlin/com/mycloud/core/network/di/NetworkModule.kt:111",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/network/src/main/kotlin/com/mycloud/core/network/di/NetworkModule.kt:189",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/app/src/main/AndroidManifest.xml:24"
+        ]
+      },
+      {
+        title: "Full-scope PAT can mint an interactive JWT session through device-link",
+        severity: "High",
+        surface: "Backend",
+        summary: "PAT-blocked routes omit device-link endpoints, so a full-access PAT can use device-link flows to obtain normal access and refresh tokens.",
+        impact: "A leaked full-scope PAT can cross the intended boundary from API token to interactive session.",
+        fix: "Deny PAT authentication on device-link creation, claim, approve, and poll routes, or require explicit interactive credentials.",
+        tests: "A PAT with '*' must be forbidden from device-link create and approve, and must not be able to obtain JWTs.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/auth_pat.go:53",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/auth_pat.go:170",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/router.go:149",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_device_link.go:187"
+        ]
+      },
+      {
+        title: "Session revocation does not revoke the device refresh token family",
+        severity: "High",
+        surface: "Backend",
+        summary: "Session rows are keyed by access-token JTI. Revoking a session blacklists only that access JTI, so the refresh token can create a fresh session.",
+        impact: "A user can revoke a device in the UI and that device may regain access on refresh.",
+        fix: "Store refresh family, refresh JTI, and device ID server-side. Revoke by device or family, not only access JTI.",
+        tests: "Revoke another session, then present that device's refresh token. Refresh should fail and no new session should appear.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_sessions.go:86",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_sessions.go:99",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_auth.go:278",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/migrations/023_sessions.sql:8"
+        ]
+      },
+      {
+        title: "Editors can create owner-invisible public upload links",
+        severity: "High",
+        surface: "Backend",
+        summary: "Collaborators with editor access can create upload requests into shared folders, but list and delete are scoped to created_by.",
+        impact: "The owner cannot see or revoke a collaborator-created public upload link that writes into the owner's folder and quota.",
+        fix: "Introduce can_share permission or make delegated public links owner-visible and owner-revocable.",
+        tests: "A collaborator-created upload request should be forbidden, owner-visible, or governed by explicit can_share permission.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_requests.go:20",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_requests.go:80",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_requests.go:113",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_requests.go:276"
+        ]
+      },
+      {
+        title: "Purge double-releases quota after soft delete",
+        severity: "High",
+        surface: "Backend",
+        summary: "Soft delete releases current bytes, then permanent purge subtracts current bytes again plus version bytes.",
+        impact: "Quota used_bytes can drift below the real active storage total.",
+        fix: "Define one quota transition per lifecycle state. Purge should release only bytes still charged at purge time.",
+        tests: "Delete to trash, purge with unrelated active files and versions, and assert final used_bytes is correct.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_files.go:533",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/delete_helpers.go:64",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/delete_helpers.go:161",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/delete_helpers.go:273"
+        ]
+      },
+      {
+        title: "Cross-owner move and transfer ignore version bytes",
+        severity: "High",
+        surface: "Backend",
+        summary: "Move and transfer paths charge only current file sizes, while version rows remain attached to the file.",
+        impact: "The old owner can keep paying quota for history while the new owner gets version history for free.",
+        fix: "Include version byte totals in quota checks and owner accounting for cross-owner move and ownership transfer.",
+        tests: "Move a versioned file and folder across owners, including recipient quota headroom for versions.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/move_helpers.go:47",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/move_helpers.go:117",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_transfer.go:47"
+        ]
+      },
+      {
+        title: "Version restore is incompatible with blob refs and dedup",
+        severity: "High",
+        surface: "Backend",
+        summary: "Restore physically renames current and version paths but never updates blob_refs or shared dedup references.",
+        impact: "A restore can move a blob still referenced elsewhere, leave stale blob_refs, or break downloads for dedup-shared content.",
+        fix: "Make restore a metadata-level content pointer swap with explicit acquire and release of blob refs, or update refs transactionally.",
+        tests: "Restore a version whose blob path is dedup-shared and assert blob_refs counts and downloads remain valid.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_versions.go:136",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/blob_refs.go:29"
+        ]
+      },
+      {
+        title: "Version diff endpoint queries a nonexistent column",
+        severity: "High",
+        surface: "Backend",
+        summary: "The diff handler selects v.mime_type, but the file_versions migration does not define a mime_type column.",
+        impact: "Valid version diff requests can fail with a database error.",
+        fix: "Join files for MIME type, add the column via migration, or remove the invalid select depending on desired model.",
+        tests: "Add an integration test for a successful version diff against the real schema.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_versions_diff.go:128",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/migrations/007_file_versions.sql:6"
+        ]
+      },
+      {
+        title: "Retention sweep bypasses lifecycle quota semantics",
+        severity: "High",
+        surface: "Backend",
+        summary: "Retention updates files.is_deleted directly without using quota release paths, and hard_delete is only a soft delete.",
+        impact: "Restore after retention can double-count quota, and hard delete does not purge blobs or rows as expected.",
+        fix: "Route retention actions through the same lifecycle helpers as manual delete, restore, and purge.",
+        tests: "Retention soft-delete and restore must preserve quota invariants; hard-delete must actually purge or be renamed.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/app/handlers_retention.go:141"
+        ]
+      },
+      {
+        title: "Updater target version is accepted but not enforced",
+        severity: "High",
+        surface: "Ops",
+        summary: "The server accepts target_version, but the shell update script fetches and pulls the current branch.",
+        impact: "A requested release tag can be ignored, leaving deployment dependent on mutable branch state.",
+        fix: "Checkout an explicit signed tag or digest, verify it matches the requested release, and reject dirty states.",
+        tests: "Request a target version and assert the updater checks out that exact tag before building.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/server.py:141",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/update.sh:41",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/update.sh:42"
+        ]
+      },
+      {
+        title: "Updater can leave the system half-upgraded",
+        severity: "High",
+        surface: "Ops",
+        summary: "Migrations run before image builds and restarts, while the HTTP wrapper kills the update after a fixed timeout.",
+        impact: "A long build can time out after schema changes but before new containers start.",
+        fix: "Preflight build before schema mutation where possible, add backups, use a configurable timeout, and record resumable phases.",
+        tests: "Simulate a build timeout after migration and verify the update can resume or roll back cleanly.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/update.sh:69",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/server.py:79"
+        ]
+      },
+      {
+        title: "Updater migrations bypass the app migration ledger",
+        severity: "High",
+        surface: "Ops",
+        summary: "The app tracks schema_migrations, but the updater blindly executes SQL files.",
+        impact: "Migrations with data changes can re-run or diverge from the app's migration state.",
+        fix: "Reuse the app migration runner or a shared migration CLI with applied-version tracking.",
+        tests: "Run updater twice and assert migrations are idempotent through the same ledger used by the app.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/db/migrate.go:21",
+          "C:/Users/omrio/Desktop/projects/MyCloud/updater/update.sh:70",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/migrations/014_default_quota.sql:9"
+        ]
+      },
+      {
+        title: "Desktop Stop syncing deletes remote cloud data",
+        severity: "High",
+        surface: "Desktop",
+        summary: "The renderer labels the action as Stop syncing, but the engine deletes mapped remote children and the remote root folder.",
+        impact: "Users can unintentionally delete cloud data when they expect to unlink the local folder.",
+        fix: "Split Remove from this computer from Delete from cloud, and require explicit confirmation for remote deletion.",
+        tests: "Click Stop syncing and assert remote delete APIs are not called unless the delete-cloud flow is selected.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/renderer/index.html:182",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:513",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:520"
+        ]
+      },
+      {
+        title: "Desktop pause does not pause live sync events",
+        severity: "Medium",
+        surface: "Desktop",
+        summary: "Pause only changes state. Watcher batches still enqueue and upload or delete files.",
+        impact: "A user can pause sync and still have local changes pushed to the server.",
+        fix: "Check pause state before batching and processing file system events, then queue or drop changes intentionally.",
+        tests: "Pause sync, modify a watched file, and assert no upload or delete request fires until resume.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:252",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:552",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:613"
+        ]
+      },
+      {
+        title: "Desktop self-signed TLS is insecure by default",
+        severity: "Medium",
+        surface: "Desktop",
+        summary: "The default state allows self-signed TLS and disables verification for fetch and TUS uploads.",
+        impact: "Users are exposed to token and file interception unless they manually harden settings.",
+        fix: "Default to false and scope exceptions to explicit hosts or imported certificates.",
+        tests: "Assert default state rejects invalid certs and that the override is explicit per server.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/store.ts:14",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/api.ts:32",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/api.ts:138",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/api.ts:383"
+        ]
+      },
+      {
+        title: "Desktop auto-sync interval is UI-only",
+        severity: "Medium",
+        surface: "Desktop",
+        summary: "The settings select persists autoSyncMinutes, but no engine timer uses it.",
+        impact: "Users choosing scheduled sync intervals do not actually get scheduled syncs.",
+        fix: "Add or restart an interval timer in SyncEngine, disable it at zero, and clear it on shutdown/logout.",
+        tests: "Set a one-minute interval and assert syncNow is invoked by the timer.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/renderer/index.html:125",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/renderer/renderer.js:406",
+          "C:/Users/omrio/Desktop/projects/MyCloud/desktop/src/lib/sync-engine.ts:273"
+        ]
+      },
+      {
+        title: "Frontend thumbnails likely 401 in grid view",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "FileGrid renders protected thumbnails with plain img src, but auth uses bearer tokens in request headers.",
+        impact: "Browser image requests cannot attach Authorization, so thumbnails fail unless the endpoint is public or cookie-authenticated.",
+        fix: "Fetch thumbnails with fetchAuthed and object URLs, or use a signed thumbnail URL flow.",
+        tests: "Render grid with a mocked protected thumbnail endpoint and assert thumbnails load through the auth path.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/file-explorer/FileGrid.tsx:192",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/lib/api.ts:76"
+        ]
+      },
+      {
+        title: "Frontend preview and download paths bypass token refresh",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "Several preview, download, and edit flows use raw fetch with the current access token.",
+        impact: "Expired access tokens break these flows instead of using the existing refresh pipeline.",
+        fix: "Route these requests through fetchAuthed or a shared blob-fetch helper that refreshes on 401.",
+        tests: "Mock expired access token followed by successful refresh for preview and version download paths.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/PreviewModal.tsx:320",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/PreviewModal.tsx:423",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/EditFileDialog.tsx:70",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/app/(app)/recent/page.tsx:116"
+        ]
+      },
+      {
+        title: "TUS resume filtering breaks cross-origin API deployments",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "Upload endpoint uses BASE, but previous upload filtering compares against window.location.origin.",
+        impact: "Valid resumable upload URLs are discarded when the API runs on a different origin; long uploads can also fail after token expiry.",
+        fix: "Compare against the configured API origin and refresh upload auth when needed.",
+        tests: "Set NEXT_PUBLIC_API_URL to a separate origin and assert cached TUS uploads resume.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/lib/api.ts:420",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/lib/api.ts:425",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/lib/api.ts:449",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/lib/api.ts:456"
+        ]
+      },
+      {
+        title: "Upload queue Retry does not actually retry",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "Queue items store metadata but not the File or retry callback. Retry only flips status back to queued.",
+        impact: "Users see a retry affordance that stalls without restarting the upload.",
+        fix: "Keep retryable task handles in the queue provider or move upload execution into a queue worker.",
+        tests: "Fail an upload, press Retry, and assert a new upload request starts.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/upload/UploadQueueProvider.tsx:40",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/upload/UploadQueueProvider.tsx:410",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/file-explorer/FileExplorer.tsx:482"
+        ]
+      },
+      {
+        title: "List view loses mouse multi-select wiring",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "Grid receives selected IDs and item click handlers, but FileListView does not.",
+        impact: "Batch actions are grid-only except keyboard shortcuts such as Ctrl+A.",
+        fix: "Pass selection props into FileListView and support checkbox, shift-range, and selected row states.",
+        tests: "Select multiple rows in list mode with mouse and assert batch toolbar state updates.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/file-explorer/FileExplorer.tsx:1103",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/file-explorer/FileExplorer.tsx:1119",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/file-explorer/FileListView.tsx:13"
+        ]
+      },
+      {
+        title: "Share dialog keeps one-time and permission state across closes",
+        severity: "Medium",
+        surface: "Frontend",
+        summary: "Close resets password, expiry, and limit, but leaves permission and singleView intact.",
+        impact: "A later share link can accidentally be one-time or writable due to stale dialog state.",
+        fix: "Reset permission and singleView on close or when opening for a new file.",
+        tests: "Create a one-time writable link, close, reopen, and assert defaults are restored.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/ShareDialog.tsx:41",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/ShareDialog.tsx:77",
+          "C:/Users/omrio/Desktop/projects/MyCloud/frontend/components/modals/ShareDialog.tsx:143"
+        ]
+      },
+      {
+        title: "Android refresh network failures can wipe a valid session",
+        severity: "P1",
+        surface: "Android",
+        summary: "Refresh exceptions, 5xx, malformed responses, and invalid refresh tokens all collapse to false and clear tokens/cache.",
+        impact: "A temporary outage during token expiry can log users out and wipe offline cache.",
+        fix: "Split terminal auth failures from retryable transport and server failures.",
+        tests: "Simulate refresh 500 and network failure; assert tokens remain and retry is possible.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/data/src/main/kotlin/com/mycloud/data/auth/TokenProviderImpl.kt:43",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/network/src/main/kotlin/com/mycloud/core/network/interceptor/TokenAuthenticator.kt:35",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/network/src/main/kotlin/com/mycloud/core/network/interceptor/TokenAuthenticator.kt:39",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/data/src/main/kotlin/com/mycloud/data/auth/TokenProviderImpl.kt:59"
+        ]
+      },
+      {
+        title: "Android corrupt DB key creates unrecoverable encrypted cache open",
+        severity: "P1",
+        surface: "Android",
+        summary: "A new passphrase is generated when key unwrap fails, but the existing encrypted database is opened with the new key.",
+        impact: "The disposable cache can become stuck because destructive migration does not fix a wrong SQLCipher key.",
+        fix: "Delete and recreate the encrypted cache database when key unwrap fails.",
+        tests: "Corrupt the stored DB key and assert startup recreates cache cleanly.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/database/src/main/kotlin/com/mycloud/core/database/security/DbKeyProvider.kt:43",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/database/src/main/kotlin/com/mycloud/core/database/di/DatabaseModule.kt:34"
+        ]
+      },
+      {
+        title: "Android Auto Backup includes sensitive local state",
+        severity: "P1",
+        surface: "Android",
+        summary: "allowBackup is true while token, DB key, and encrypted cache state live in app storage.",
+        impact: "Backups can restore sensitive or unusable private cloud state onto another install.",
+        fix: "Disable backup or exclude token, key, and cache files.",
+        tests: "Inspect generated backup rules and assert sensitive files are excluded.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/app/src/main/AndroidManifest.xml:19",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/datastore/src/main/kotlin/com/mycloud/core/datastore/token/SecureTokenStore.kt:48",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/database/src/main/kotlin/com/mycloud/core/database/security/DbKeyProvider.kt:50"
+        ]
+      },
+      {
+        title: "Android paging cache cannot safely represent multiple sorts",
+        severity: "P2",
+        surface: "Android",
+        summary: "The repository builds mediators per sort, but cached rows query only by folderId and have one sortIndex.",
+        impact: "Switching sort can show stale ordering, and concurrent pagers can overwrite each other's sort indexes.",
+        fix: "Store listing rows keyed by query or order directly by stable sortable columns.",
+        tests: "Switch between two sort modes and assert cached ordering remains correct.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/data/src/main/kotlin/com/mycloud/data/repository/FileRepositoryImpl.kt:52",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/data/src/main/kotlin/com/mycloud/data/repository/FileRepositoryImpl.kt:53",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/database/src/main/kotlin/com/mycloud/core/database/entity/FileEntity.kt:13",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/data/src/main/kotlin/com/mycloud/data/paging/FileRemoteMediator.kt:34"
+        ]
+      },
+      {
+        title: "Android download filenames are not sanitized or made unique",
+        severity: "P2",
+        surface: "Android",
+        summary: "Download workers write File(dir, name) directly using display or server names.",
+        impact: "Names with separators or collisions can fail, escape expected paths, or overwrite files.",
+        fix: "Sanitize to a basename, reject path separators, and generate collision-safe filenames.",
+        tests: "Download names containing slashes, dot-dot, and existing filenames and assert safe output paths.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/work/src/main/kotlin/com/mycloud/core/work/DownloadWorker.kt:53",
+          "C:/Users/omrio/Desktop/projects/MyCloud/android/core/work/src/main/kotlin/com/mycloud/core/work/ArchiveDownloadWorker.kt:62"
+        ]
+      },
+      {
+        title: "Encrypted chunk decoder trusts unbounded chunk length",
+        severity: "Medium",
+        surface: "Backend",
+        summary: "MCv2 decrypt reads plainLen from disk and allocates that many bytes.",
+        impact: "A corrupted blob can cause excessive allocation during download, thumbnail, or extract work.",
+        fix: "Reject chunk lengths larger than the configured chunk size before allocating.",
+        tests: "Malformed MCv2 blob with chunk length above chunkSize should return an error without large allocation.",
+        paths: [
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/storage/crypto.go:194",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/storage/crypto.go:205",
+          "C:/Users/omrio/Desktop/projects/MyCloud/backend-go/internal/storage/crypto.go:317"
+        ]
+      }
+    ];
+
+    const roadmap = [
+      {
+        lane: "Quick Wins",
+        note: "Small changes with high user trust payoff.",
+        items: [
+          ["Fix destructive desktop labels", "Split unlink from delete-cloud and add confirmation."],
+          ["Repair frontend retry", "Make upload retry start real upload work again."],
+          ["Reset share dialog defaults", "Avoid stale one-time or writable links."],
+          ["Add service healthchecks", "Backend, frontend, nginx, Redis, and updater readiness."],
+          ["Sanitize Android downloads", "Safe basenames and collision handling."]
+        ]
+      },
+      {
+        lane: "Medium Investments",
+        note: "Foundational quality and administration improvements.",
+        items: [
+          ["Storage reconciliation", "Dry-run and repair for quota, blob refs, orphaned blobs, thumbnails, and HLS."],
+          ["Transfer center", "Unified retry, pause, resume, cancel, speed, ETA, and failed-file recovery."],
+          ["Session family model", "Track device ID, refresh JTI, and family for real device revocation."],
+          ["Share governance", "can_share permission, owner-visible links, expiry/password policies, and audit alerts."],
+          ["Update safety", "Signed release verification, phased updates, DB backups, and rollback."]
+        ]
+      },
+      {
+        lane: "Ambitious Bets",
+        note: "Bigger product moves that make MyCloud feel complete.",
+        items: [
+          ["Offline-first mobile favorites", "Pinned files available without network."],
+          ["Camera backup", "Wi-Fi and charging constraints with conflict-aware history."],
+          ["Desktop Explorer integration", "Context menu actions and per-file sync status badges."],
+          ["Preview workspace", "Metadata, versions, comments, tags, and sharing in one sidebar."],
+          ["Admin observability", "Container, DB, Redis, disk, cert, queue, and migration dashboards."]
+        ]
+      }
+    ];
+
+    const verification = [
+      {
+        name: "Backend Go tests",
+        status: "pass",
+        detail: "Passed after dependency download was allowed.",
+        command: "cd backend-go && go test ./..."
+      },
+      {
+        name: "Frontend tests",
+        status: "pass",
+        detail: "Passed 206 tests across 17 files.",
+        command: "cd frontend && npm.cmd run test"
+      },
+      {
+        name: "Frontend build",
+        status: "pass",
+        detail: "Next.js production build completed successfully.",
+        command: "cd frontend && npm.cmd run build"
+      },
+      {
+        name: "Desktop build",
+        status: "pass",
+        detail: "TypeScript build completed successfully.",
+        command: "cd desktop && npm.cmd run build"
+      },
+      {
+        name: "Frontend lint",
+        status: "fail",
+        detail: "Failed on one no-explicit-any test error plus 17 warnings.",
+        command: "cd frontend && npm.cmd run lint"
+      },
+      {
+        name: "Android tests",
+        status: "blocked",
+        detail: "Could not run because Java/JDK is not available in PATH.",
+        command: "cd android && .\\gradlew.bat testDebugUnitTest"
+      }
+    ];
+
+    const state = {
+      severity: "All",
+      surface: "All",
+      search: "",
+      sort: "severity",
+      expanded: false
+    };
+
+    const severityRank = {
+      Critical: 0,
+      P0: 0,
+      High: 1,
+      P1: 1,
+      Medium: 2,
+      P2: 2,
+      Low: 3
+    };
+
+    const severityGroups = ["All", "Critical", "P0", "High", "P1", "Medium", "P2", "Low"];
+    const surfaces = ["All", "Backend", "Frontend", "Android", "Desktop", "Ops"];
+
+    const el = {
+      views: document.querySelector(".views"),
+      nav: document.querySelectorAll("[data-nav]"),
+      search: document.getElementById("searchInput"),
+      sort: document.getElementById("sortSelect"),
+      findings: document.getElementById("findingsList"),
+      resultCount: document.getElementById("resultCount"),
+      empty: document.getElementById("emptyState"),
+      severityFilters: document.getElementById("severityFilters"),
+      surfaceFilters: document.getElementById("surfaceFilters"),
+      expandAll: document.getElementById("expandAll"),
+      reset: document.getElementById("resetFilters"),
+      topRisks: document.getElementById("showTopRisks"),
+      metricTotal: document.getElementById("metricTotal"),
+      metricCritical: document.getElementById("metricCritical"),
+      metricHigh: document.getElementById("metricHigh"),
+      riskBars: document.getElementById("riskBars"),
+      roadmap: document.getElementById("roadmap"),
+      verification: document.getElementById("verification")
+    };
+
+    function slug(value) {
+      return String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    }
+
+    function makeChip(label, type) {
+      const button = document.createElement("button");
+      button.className = "chip";
+      button.dataset.value = label;
+      button.dataset.active = "false";
+      button.type = "button";
+      button.innerHTML = label === "All" ? label : `<span class="dot"></span>${label}`;
+      button.addEventListener("click", () => {
+        state[type] = label;
+        render();
+      });
+      return button;
+    }
+
+    function setupFilters() {
+      severityGroups.forEach(label => el.severityFilters.appendChild(makeChip(label, "severity")));
+      surfaces.forEach(label => el.surfaceFilters.appendChild(makeChip(label, "surface")));
+    }
+
+    function updateFilterChips() {
+      el.severityFilters.querySelectorAll(".chip").forEach(chip => {
+        chip.dataset.active = chip.dataset.value === state.severity ? "true" : "false";
+      });
+      el.surfaceFilters.querySelectorAll(".chip").forEach(chip => {
+        chip.dataset.active = chip.dataset.value === state.surface ? "true" : "false";
+      });
+    }
+
+    function findingMatches(finding) {
+      const searchText = [
+        finding.title,
+        finding.severity,
+        finding.surface,
+        finding.summary,
+        finding.impact,
+        finding.fix,
+        finding.tests,
+        finding.paths.join(" ")
+      ].join(" ").toLowerCase();
+
+      return (state.severity === "All" || finding.severity === state.severity)
+        && (state.surface === "All" || finding.surface === state.surface)
+        && (!state.search || searchText.includes(state.search.toLowerCase()));
+    }
+
+    function sortedFindings(items) {
+      return [...items].sort((a, b) => {
+        if (state.sort === "surface") {
+          return a.surface.localeCompare(b.surface) || (severityRank[a.severity] - severityRank[b.severity]);
+        }
+        if (state.sort === "title") {
+          return a.title.localeCompare(b.title);
+        }
+        return (severityRank[a.severity] - severityRank[b.severity]) || a.surface.localeCompare(b.surface) || a.title.localeCompare(b.title);
+      });
+    }
+
+    function copyText(text, button) {
+      navigator.clipboard.writeText(text).then(() => {
+        const old = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => button.textContent = old, 900);
+      }).catch(() => {
+        button.textContent = "Copy failed";
+        setTimeout(() => button.textContent = "Copy", 900);
+      });
+    }
+
+    function renderFinding(finding, index) {
+      const card = document.createElement("article");
+      card.className = "finding";
+      card.dataset.severity = finding.severity;
+      card.dataset.surface = finding.surface;
+      card.dataset.open = state.expanded ? "true" : "false";
+
+      const severityClass = `severity-${slug(finding.severity)}`;
+      card.innerHTML = `
+        <button class="finding-button" type="button" aria-expanded="${state.expanded ? "true" : "false"}">
+          <div class="finding-top">
+            <div class="finding-title">${index + 1}. ${finding.title}</div>
+            <div class="badges">
+              <span class="badge ${severityClass}"><span class="dot"></span>${finding.severity}</span>
+              <span class="badge">${finding.surface}</span>
+            </div>
+          </div>
+          <p class="summary">${finding.summary}</p>
+        </button>
+        <div class="details">
+          <div class="detail-grid">
+            <div class="detail-box">
+              <h4>Impact</h4>
+              <p>${finding.impact}</p>
+            </div>
+            <div class="detail-box">
+              <h4>Suggested Fix</h4>
+              <p>${finding.fix}</p>
+            </div>
+          </div>
+          <div class="detail-grid">
+            <div class="detail-box">
+              <h4>Missing Test</h4>
+              <p>${finding.tests}</p>
+            </div>
+            <div class="detail-box">
+              <h4>Evidence</h4>
+              <div class="path-list">
+                ${finding.paths.map(path => `
+                  <div class="path">
+                    <span>${path}</span>
+                    <button class="copy" type="button" data-copy="${path.replace(/"/g, "&quot;")}">Copy</button>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      card.querySelector(".finding-button").addEventListener("click", () => {
+        const open = card.dataset.open !== "true";
+        card.dataset.open = open ? "true" : "false";
+        card.querySelector(".finding-button").setAttribute("aria-expanded", open ? "true" : "false");
+      });
+
+      card.querySelectorAll("[data-copy]").forEach(button => {
+        button.addEventListener("click", event => {
+          event.stopPropagation();
+          copyText(button.dataset.copy, button);
+        });
+      });
+
+      return card;
+    }
+
+    function renderFindings() {
+      const filtered = sortedFindings(findings.filter(findingMatches));
+      el.findings.innerHTML = "";
+      filtered.forEach((finding, index) => el.findings.appendChild(renderFinding(finding, index)));
+      el.resultCount.textContent = `${filtered.length} of ${findings.length} findings shown`;
+      el.empty.dataset.show = filtered.length === 0 ? "true" : "false";
+    }
+
+    function renderMetrics() {
+      const critical = findings.filter(f => f.severity === "Critical" || f.severity === "P0").length;
+      const high = findings.filter(f => f.severity === "High" || f.severity === "P1").length;
+      el.metricTotal.textContent = findings.length;
+      el.metricCritical.textContent = critical;
+      el.metricHigh.textContent = high;
+
+      const groups = [
+        ["Critical/P0", critical, "critical"],
+        ["High/P1", high, "high"],
+        ["Medium/P2", findings.filter(f => ["Medium", "P2"].includes(f.severity)).length, "medium"],
+        ["Low", findings.filter(f => f.severity === "Low").length, "low"]
+      ];
+      const max = Math.max(...groups.map(group => group[1]));
+      el.riskBars.innerHTML = groups.map(([name, count, cls]) => `
+        <div class="bar-row">
+          <span>${name}</span>
+          <div class="bar-track"><div class="bar ${cls}" style="width:${Math.max(8, (count / max) * 100)}%"></div></div>
+          <strong>${count}</strong>
+        </div>
+      `).join("");
+    }
+
+    function renderRoadmap() {
+      el.roadmap.innerHTML = roadmap.map(lane => `
+        <section class="lane">
+          <header>
+            <h3>${lane.lane}</h3>
+            <p>${lane.note}</p>
+          </header>
+          <div class="road-items">
+            ${lane.items.map(([title, text]) => `
+              <div class="road-item">
+                <strong>${title}</strong>
+                <span>${text}</span>
+              </div>
+            `).join("")}
+          </div>
+        </section>
+      `).join("");
+    }
+
+    function renderVerification() {
+      el.verification.innerHTML = verification.map(item => `
+        <article class="verify-card">
+          <span class="status ${item.status}"><span class="dot"></span>${item.status.toUpperCase()}</span>
+          <h3>${item.name}</h3>
+          <p class="summary">${item.detail}</p>
+          <div class="command">${item.command}</div>
+        </article>
+      `).join("");
+    }
+
+    function render() {
+      updateFilterChips();
+      renderFindings();
+    }
+
+    setupFilters();
+    renderMetrics();
+    renderRoadmap();
+    renderVerification();
+    render();
+
+    el.search.addEventListener("input", event => {
+      state.search = event.target.value.trim();
+      render();
+    });
+
+    el.sort.addEventListener("change", event => {
+      state.sort = event.target.value;
+      render();
+    });
+
+    el.expandAll.addEventListener("click", () => {
+      state.expanded = !state.expanded;
+      el.expandAll.textContent = state.expanded ? "Collapse all" : "Expand all";
+      render();
+    });
+
+    el.reset.addEventListener("click", () => {
+      state.severity = "All";
+      state.surface = "All";
+      state.search = "";
+      state.sort = "severity";
+      state.expanded = false;
+      el.search.value = "";
+      el.sort.value = "severity";
+      el.expandAll.textContent = "Expand all";
+      render();
+    });
+
+    el.topRisks.addEventListener("click", () => {
+      state.severity = "All";
+      state.surface = "All";
+      state.search = "";
+      state.sort = "severity";
+      el.search.value = "";
+      el.sort.value = "severity";
+      render();
+      const cards = [...document.querySelectorAll(".finding")];
+      cards.forEach((card, index) => {
+        const shouldOpen = index < 8;
+        card.dataset.open = shouldOpen ? "true" : "false";
+        card.querySelector(".finding-button").setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      });
+      document.querySelector(".pane-findings").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    el.nav.forEach(button => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.nav;
+        el.views.dataset.active = target;
+        el.nav.forEach(navButton => navButton.setAttribute("aria-selected", navButton === button ? "true" : "false"));
+      });
+    });
+  </script>
+</body>
+</html>

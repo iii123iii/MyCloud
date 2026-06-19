@@ -30,7 +30,7 @@ func (a *App) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 	// FE can grey out the Revoke button (you logout instead).
 	currentJTI := jtiFrom(r)
 	rows, err := a.DB.QueryContext(r.Context(), `
-		SELECT jti, COALESCE(device_label, ''), COALESCE(user_agent, ''), COALESCE(ip_address, ''),
+		SELECT jti, COALESCE(device_label, ''), COALESCE(device_name, ''), COALESCE(user_agent, ''), COALESCE(ip_address, ''),
 		       created_at, last_seen_at, expires_at
 		FROM sessions
 		WHERE user_id = ? AND (expires_at IS NULL OR expires_at > NOW())
@@ -42,16 +42,17 @@ func (a *App) handleListMySessions(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	out := make([]map[string]any, 0)
 	for rows.Next() {
-		var jti, label, ua, ip string
+		var jti, label, name, ua, ip string
 		var created, seen time.Time
 		var expires sql.NullTime
-		if err := rows.Scan(&jti, &label, &ua, &ip, &created, &seen, &expires); err != nil {
+		if err := rows.Scan(&jti, &label, &name, &ua, &ip, &created, &seen, &expires); err != nil {
 			respondDBError(w, r, err)
 			return
 		}
 		row := map[string]any{
 			"jti":          jti,
 			"device_label": label,
+			"device_name":  name,
 			"user_agent":   ua,
 			"ip_address":   ip,
 			"created_at":   created,
@@ -161,6 +162,13 @@ func deviceLabelFromUA(ua string) string {
 	ua = strings.ToLower(ua)
 	browser := "Unknown browser"
 	switch {
+	// Native apps identify themselves with a "MyCloud-<platform>" product
+	// token (set by the client network layer). Match these first so the app
+	// never falls through to "Unknown browser".
+	case strings.Contains(ua, "mycloud-android"):
+		browser = "MyCloud app"
+	case strings.Contains(ua, "mycloud-ios"):
+		browser = "MyCloud app"
 	case strings.Contains(ua, "edg/"):
 		browser = "Edge"
 	case strings.Contains(ua, "chrome/"):

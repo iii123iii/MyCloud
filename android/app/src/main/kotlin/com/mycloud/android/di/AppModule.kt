@@ -1,6 +1,7 @@
 package com.mycloud.android.di
 
 import com.mycloud.android.BuildConfig
+import com.mycloud.core.network.di.AppVersionName
 import com.mycloud.core.network.di.BaseUrl
 import com.mycloud.core.network.di.DebugBuild
 import dagger.Module
@@ -22,4 +23,8 @@ object AppModule {
     @Provides
     @DebugBuild
     fun provideIsDebugBuild(): Boolean = BuildConfig.DEBUG
+
+    @Provides
+    @AppVersionName
+    fun provideAppVersionName(): String = BuildConfig.VERSION_NAME
 }

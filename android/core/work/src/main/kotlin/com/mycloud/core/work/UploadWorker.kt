@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.mycloud.core.network.api.TransferApi
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -42,12 +43,15 @@ class UploadWorker @AssistedInject constructor(
             setForeground(notifications.foregroundInfo(id, name, 0, upload = true))
 
             var lastPct = -1
+            var lastNotifyMs = 0L
             val body = UriRequestBody(resolver, uri, mime, size) { sent, total ->
                 val pct = if (total > 0) ((sent * 100) / total).toInt() else 0
                 if (pct != lastPct) {
                     lastPct = pct
                     setProgressAsync(workDataOf(TransferKeys.KEY_PROGRESS to pct))
-                    notifications.notifyProgress(notificationId, name, pct, upload = true)
+                    lastNotifyMs = notifications.notifyProgressThrottled(
+                        notificationId, name, pct, upload = true, lastEmitMs = lastNotifyMs,
+                    )
                 }
             }
             val filePart = MultipartBody.Part.createFormData("file", name, body)
@@ -59,13 +63,17 @@ class UploadWorker @AssistedInject constructor(
                 notifications.notifyComplete(notificationId, name, success = true, upload = true)
                 Result.success(workDataOf(TransferKeys.KEY_FILE_ID to response.body()?.data?.id))
             } else {
-                notifications.notifyComplete(notificationId, name, success = false, upload = true)
+                // Don't surface a "failed" notification when we're going to retry —
+                // only on the terminal failure.
                 if (response.code() in 500..599 && runAttemptCount < MAX_ATTEMPTS) {
                     Result.retry()
                 } else {
+                    notifications.notifyComplete(notificationId, name, success = false, upload = true)
                     Result.failure()
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (runAttemptCount < MAX_ATTEMPTS) {
                 Result.retry()

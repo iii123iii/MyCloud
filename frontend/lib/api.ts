@@ -222,6 +222,9 @@ export const auth = {
 export interface Session {
   jti: string;
   device_label: string;
+  // Explicit, client-supplied name (native apps via QR linking report this).
+  // Preferred over device_label when present.
+  device_name?: string;
   user_agent: string;
   ip_address: string;
   created_at: string;
@@ -235,6 +238,45 @@ export interface Session {
 export const sessions = {
   list: () => request<{ sessions: Session[] }>("/api/v2/me/sessions"),
   revoke: (jti: string) => request<void>(`/api/v2/me/sessions/${encodeURIComponent(jti)}`, { method: "DELETE" }),
+};
+
+// ── QR device linking ───────────────────────────────────────────────────────
+// An already-authenticated browser mints a short-lived pairing, shows it as a
+// QR, and approves the scanning phone. The phone (unauthenticated) hits the
+// public claim/poll endpoints with the verifier carried in the QR.
+
+export type DeviceLinkState =
+  | "pending"
+  | "awaiting_approval"
+  | "approved"
+  | "consumed"
+  | "denied"
+  | "expired";
+
+export interface DeviceLinkTicket {
+  code: string;
+  // Secret carried only in the QR; the phone must present it to claim/poll.
+  verifier: string;
+  // Server base URL the phone should talk to (auto-configures the app).
+  url: string;
+  expires_in: number;
+}
+
+export interface DeviceLinkStatus {
+  state: DeviceLinkState;
+  device_name?: string;
+  device_model?: string;
+  device_ip?: string;
+  platform?: string;
+}
+
+export const deviceLink = {
+  create: () => request<DeviceLinkTicket>("/api/v2/device-link/create", { method: "POST" }),
+  status: (code: string) => request<DeviceLinkStatus>(`/api/v2/device-link/${encodeURIComponent(code)}`),
+  approve: (code: string) =>
+    request<{ message: string }>(`/api/v2/device-link/${encodeURIComponent(code)}:approve`, { method: "POST" }),
+  deny: (code: string) =>
+    request<void>(`/api/v2/device-link/${encodeURIComponent(code)}:deny`, { method: "POST" }),
 };
 
 // ── Personal access tokens ──────────────────────────────────────────────────
@@ -384,15 +426,21 @@ export const files = {
       const upload = new tus.Upload(file, {
         endpoint,
         retryDelays: [0, 1000, 3000, 5000, 10000],
-        // parallelUploads was previously set to 3 — that requires the server to
-        // advertise the tus `concatenation` extension AND to accept
-        // partial uploads without the full metadata (filename/folder_id
-        // only land on the final POST). Our PreUploadCreateCallback
-        // rejects that, so client-side concat 404s on the very first
-        // POST. Until the server callback is reworked to defer
-        // validation to the final concat call, keep uploads serial.
-        // The smaller chunk size still wins on high-latency links.
-        chunkSize: 4 * 1024 * 1024,
+        // Chunk size drives upload throughput. tus sends one PATCH per chunk and
+        // waits for the 204 before the next, so a small chunk means many round
+        // trips and per-chunk server work (auth, file lock, .info rewrite) — on a
+        // LAN that overhead, not bandwidth, was capping us. 16 MB cuts the round
+        // trips ~4× vs the old 4 MB while keeping resume granularity sane (a drop
+        // re-sends at most 16 MB). Tunable; larger = fewer round trips, more RAM
+        // per in-flight chunk and coarser resume.
+        //
+        // parallelUploads is intentionally left off. It needs the tus
+        // `concatenation` extension, which on the server (a) would fire our
+        // finish hook once per partial unless guarded and (b) makes filestore
+        // copy every partial into the final blob — an extra full-file I/O pass.
+        // Over our single HTTP/2 connection, parallel streams add no bandwidth on
+        // a low-RTT LAN, so a large serial chunk is the better lever here.
+        chunkSize: 16 * 1024 * 1024,
         metadata: {
           filename: file.name,
           filetype: file.type || "application/octet-stream",
@@ -417,6 +465,21 @@ export const files = {
 
   downloadUrl: (id: string) => `${BASE}/api/v2/files/${id}:download`,
   previewUrl: (id: string) => `${BASE}/api/v2/files/${id}:preview`,
+
+  /**
+   * Issue a short-lived HMAC-signed URL the browser can hit directly, with no
+   * Authorization header — suitable as a <video>/<audio>/<img> `src`. The
+   * endpoint supports HTTP Range, so large media streams and seeks without
+   * downloading the whole file into memory. Returns an absolute URL ready to
+   * assign to an element. `ttlSeconds` is clamped server-side (≤ 1h).
+   */
+  presign: async (id: string, ttlSeconds?: number): Promise<{ url: string; expiresAt: string }> => {
+    const data = await request<{ url: string; expires_at: string }>(`/api/v2/files/${id}:presign`, {
+      method: "POST",
+      body: JSON.stringify(ttlSeconds ? { ttl_seconds: ttlSeconds } : {}),
+    });
+    return { url: `${BASE}${data.url}`, expiresAt: data.expires_at };
+  },
   getInfo: (id: string) => request<FileItem>(`/api/v2/files/${id}`),
   update: (id: string, data: Partial<{ name: string; folder_id: string | null; is_starred: boolean }>) =>
     request<{ message: string }>(`/api/v2/files/${id}`, { method: "PATCH", body: JSON.stringify(data) }),

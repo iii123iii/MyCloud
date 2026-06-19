@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.mycloud.feature.browser
 
 import androidx.activity.compose.BackHandler
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -18,6 +21,7 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +49,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.mycloud.core.common.result.NetworkResult
+import com.mycloud.core.common.result.userMessageOrNull
 import com.mycloud.core.model.Folder
 import com.mycloud.data.repository.FolderRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -72,6 +79,16 @@ class FolderPickerViewModel @Inject constructor(
     private val _title = MutableStateFlow("My Files")
     val title: StateFlow<String> = _title.asStateFlow()
 
+    private val _isLoading = MutableStateFlow(false)
+    /** True while the children of the current folder are being fetched. */
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _isCreatingFolder = MutableStateFlow(false)
+    val isCreatingFolder: StateFlow<Boolean> = _isCreatingFolder.asStateFlow()
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
     // (id, title) of each ancestor so the nav-icon can walk back up.
     private val backStack = ArrayDeque<Pair<String?, String>>()
 
@@ -80,29 +97,75 @@ class FolderPickerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
-        viewModelScope.launch { folderRepository.refreshFolders(null) }
+        load(null)
+    }
+
+    /**
+     * Return the picker to its root state. This VM is reused across reopens, so
+     * without an explicit reset the previous session's back stack/location would
+     * leak into the next Move/Copy.
+     */
+    fun reset() {
+        backStack.clear()
+        currentId.value = null
+        _title.value = "My Files"
+        _error.value = null
+        _isCreatingFolder.value = false
+        load(null)
     }
 
     fun enter(folder: Folder) {
+        _error.value = null
         backStack.addLast(currentId.value to _title.value)
         currentId.value = folder.id
         _title.value = folder.name
-        viewModelScope.launch { folderRepository.refreshFolders(folder.id) }
+        load(folder.id)
     }
 
     /** @return true if a level was popped; false if already at the root. */
     fun up(): Boolean {
         val previous = backStack.removeLastOrNull() ?: return false
+        _error.value = null
         currentId.value = previous.first
         _title.value = previous.second
-        viewModelScope.launch { folderRepository.refreshFolders(previous.first) }
+        load(previous.first)
         return true
     }
 
-    fun createFolder(name: String) {
+    private fun load(folderId: String?) {
+        _isLoading.value = true
+        viewModelScope.launch {
+            try {
+                folderRepository.refreshFolders(folderId)
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    fun clearError() {
+        _error.value = null
+    }
+
+    fun createFolder(name: String, onResult: (Boolean) -> Unit = {}) {
         val trimmed = name.trim()
-        if (trimmed.isEmpty()) return
-        viewModelScope.launch { folderRepository.createFolder(trimmed, currentId.value) }
+        if (trimmed.isEmpty()) {
+            onResult(false)
+            return
+        }
+        if (_isCreatingFolder.value) return
+        _isCreatingFolder.value = true
+        _error.value = null
+        viewModelScope.launch {
+            val result = folderRepository.createFolder(trimmed, currentId.value)
+            _isCreatingFolder.value = false
+            if (result is NetworkResult.Success) {
+                onResult(true)
+            } else {
+                _error.value = result.userMessageOrNull() ?: "Couldn't create folder"
+                onResult(false)
+            }
+        }
     }
 }
 
@@ -123,7 +186,13 @@ fun FolderPicker(
     val folders by viewModel.folders.collectAsStateWithLifecycle()
     val location by viewModel.title.collectAsStateWithLifecycle()
     val currentId by viewModel.currentFolderId.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isCreatingFolder by viewModel.isCreatingFolder.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
     var showNewFolder by remember { mutableStateOf(false) }
+
+    // The VM survives reopens; reset to root each time the picker is shown.
+    LaunchedEffect(Unit) { viewModel.reset() }
 
     val verb = if (mode == FolderPickerMode.MOVE) "Move" else "Copy"
 
@@ -179,7 +248,16 @@ fun FolderPicker(
                     }
                 },
             ) { padding ->
-                if (folders.isEmpty()) {
+                if (isLoading && folders.isEmpty()) {
+                    Box(
+                        Modifier
+                            .padding(padding)
+                            .fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        LoadingIndicator()
+                    }
+                } else if (folders.isEmpty()) {
                     Box(
                         Modifier
                             .padding(padding)
@@ -211,6 +289,17 @@ fun FolderPicker(
                                         },
                                     )
                                 },
+                                supportingContent = if (excluded) {
+                                    {
+                                        Text(
+                                            "Can't $verb a folder into itself",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
                                 leadingContent = {
                                     Icon(
                                         Icons.Filled.Folder,
@@ -238,26 +327,51 @@ fun FolderPicker(
     if (showNewFolder) {
         var name by remember { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { showNewFolder = false },
+            onDismissRequest = {
+                if (!isCreatingFolder) {
+                    viewModel.clearError()
+                    showNewFolder = false
+                }
+            },
             title = { Text("New folder") },
             text = {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    singleLine = true,
-                    label = { Text("Folder name") },
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = {
+                            name = it
+                            viewModel.clearError()
+                        },
+                        singleLine = true,
+                        label = { Text("Folder name") },
+                        isError = error != null,
+                    )
+                    error?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.createFolder(name)
+                        viewModel.createFolder(name) { ok -> if (ok) showNewFolder = false }
+                    },
+                    enabled = name.isNotBlank() && !isCreatingFolder,
+                ) { Text(if (isCreatingFolder) "Creating..." else "Create") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.clearError()
                         showNewFolder = false
                     },
-                    enabled = name.isNotBlank(),
-                ) { Text("Create") }
+                    enabled = !isCreatingFolder,
+                ) { Text("Cancel") }
             },
-            dismissButton = { TextButton(onClick = { showNewFolder = false }) { Text("Cancel") } },
         )
     }
 }

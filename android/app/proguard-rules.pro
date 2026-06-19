@@ -3,7 +3,7 @@
 # kotlinx.serialization @Serializable models — handled by the serialization
 # plugin's own rules, but verify when the data layer lands).
 
-# SQLCipher: native methods are bound via JNI by name, so the encrypted DB will
-# crash at runtime in release builds if R8 strips/renames these classes.
--keep class net.sqlcipher.** { *; }
--keep interface net.sqlcipher.** { *; }
+# SQLCipher (sqlcipher-android): native methods are bound via JNI by name, so the
+# encrypted DB will crash at runtime in release builds if R8 strips/renames these.
+-keep class net.zetetic.database.** { *; }
+-keep interface net.zetetic.database.** { *; }

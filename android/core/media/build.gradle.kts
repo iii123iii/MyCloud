@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "com.mycloud.core.media"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

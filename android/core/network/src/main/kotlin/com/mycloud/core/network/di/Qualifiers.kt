@@ -17,3 +17,9 @@ annotation class Unauthenticated
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class DebugBuild
+
+/** The app's versionName (e.g. "0.1.0"). Bound in :app from BuildConfig; used by
+ *  the UserAgentInterceptor so sessions show a real app version. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class AppVersionName

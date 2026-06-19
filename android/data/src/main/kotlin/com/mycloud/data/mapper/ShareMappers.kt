@@ -27,6 +27,9 @@ fun GrantDto.toDomain(): Grant = Grant(
     fileId = fileId,
     folderId = folderId,
     createdAtMillis = createdAt.isoToEpochMillis(),
+    fileName = fileName,
+    folderName = folderName,
+    granterName = granterName,
 )
 
 private fun String.toPermissionOrRead(): Permission = when (lowercase()) {

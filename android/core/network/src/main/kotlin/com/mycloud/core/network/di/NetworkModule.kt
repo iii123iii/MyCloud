@@ -3,6 +3,7 @@ package com.mycloud.core.network.di
 import com.mycloud.core.network.api.AccountApi
 import com.mycloud.core.network.api.AuthApi
 import com.mycloud.core.network.api.CommentApi
+import com.mycloud.core.network.api.DeviceLinkApi
 import com.mycloud.core.network.api.FileApi
 import com.mycloud.core.network.api.FolderApi
 import com.mycloud.core.network.api.PhotoApi
@@ -18,6 +19,7 @@ import com.mycloud.core.network.interceptor.AuthInterceptor
 import com.mycloud.core.network.interceptor.HostSelectionInterceptor
 import com.mycloud.core.network.interceptor.RetryInterceptor
 import com.mycloud.core.network.interceptor.TokenAuthenticator
+import com.mycloud.core.network.interceptor.UserAgentInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -63,13 +65,14 @@ object NetworkModule {
     @Unauthenticated
     fun provideBareClient(
         serverUrlSource: ServerUrlSource,
-        @DebugBuild debug: Boolean,
+        @AppVersionName appVersionName: String,
     ): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .allowInsecureTls()
         .addInterceptor(HostSelectionInterceptor(serverUrlSource))
+        .addInterceptor(UserAgentInterceptor(appVersionName))
         .addInterceptor(loggingInterceptor())
-        .apply { if (debug) allowInsecureTls() }
         .build()
 
     @Provides
@@ -86,6 +89,13 @@ object NetworkModule {
     fun provideTokenRefreshApi(@Unauthenticated retrofit: Retrofit): TokenRefreshApi =
         retrofit.create(TokenRefreshApi::class.java)
 
+    // Device-link claim/poll are unauthenticated (the phone has no token yet),
+    // so they ride the bare client.
+    @Provides
+    @Singleton
+    fun provideDeviceLinkApi(@Unauthenticated retrofit: Retrofit): DeviceLinkApi =
+        retrofit.create(DeviceLinkApi::class.java)
+
     // --- Main authenticated client: bearer attach + retry + single-flight refresh. ---
 
     @Provides
@@ -93,13 +103,14 @@ object NetworkModule {
     fun provideOkHttpClient(
         tokenProvider: TokenProvider,
         serverUrlSource: ServerUrlSource,
-        @DebugBuild debug: Boolean,
+        @AppVersionName appVersionName: String,
     ): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .apply { if (debug) allowInsecureTls() }
+        .allowInsecureTls()
         .addInterceptor(HostSelectionInterceptor(serverUrlSource))
+        .addInterceptor(UserAgentInterceptor(appVersionName))
         .addInterceptor(AuthInterceptor(tokenProvider))
         .addInterceptor(RetryInterceptor())
         .addInterceptor(loggingInterceptor())
@@ -169,9 +180,11 @@ object NetworkModule {
 }
 
 /**
- * DEBUG ONLY: trust any TLS cert and skip hostname verification, so the app can
- * reach a local self-signed server (e.g. nginx at https://10.0.2.2). Never enabled
- * in release builds — gated by the [DebugBuild] flag at the call site.
+ * Trusts ANY TLS certificate and skips hostname verification, so the app can reach
+ * a self-hosted server with a self-signed cert (e.g. a home-LAN box). This is an
+ * intentional product choice for this self-hosted app — Google Play Protect will
+ * warn that the app "bypasses TLS security", which is expected. If you ever ship to
+ * untrusted users, replace this with proper cert validation / pinning.
  */
 private fun OkHttpClient.Builder.allowInsecureTls(): OkHttpClient.Builder {
     val trustManager = object : X509TrustManager {

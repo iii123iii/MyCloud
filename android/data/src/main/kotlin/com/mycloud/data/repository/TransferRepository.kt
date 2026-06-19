@@ -1,5 +1,6 @@
 package com.mycloud.data.repository
 
+import androidx.work.WorkInfo
 import com.mycloud.core.model.Transfer
 import com.mycloud.core.work.TransferManager
 import com.mycloud.data.mapper.toTransfer
@@ -23,7 +24,11 @@ class TransferRepositoryImpl @Inject constructor(
 ) : TransferRepository {
 
     override fun transfers(): Flow<List<Transfer>> =
-        transferManager.observeTransfers().map { infos -> infos.map { it.toTransfer() } }
+        transferManager.observeTransfers().map { infos ->
+            infos
+                .filterNot { it.state == WorkInfo.State.CANCELLED }
+                .map { it.toTransfer() }
+        }
 
     override fun uploadFile(uri: String, displayName: String, folderId: String?) =
         transferManager.enqueueUpload(uri, displayName, folderId)

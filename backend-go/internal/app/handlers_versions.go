@@ -230,11 +230,12 @@ func (a *App) streamVersion(w http.ResponseWriter, r *http.Request, disposition 
 		return
 	}
 	var name, mimeType, encKey, iv, tag, path string
+	var sizeBytes int64
 	err = a.DB.QueryRowContext(r.Context(), `
-		SELECT f.name, f.mime_type, v.encryption_key_enc, v.encryption_iv, v.encryption_tag, v.storage_path
+		SELECT f.name, f.mime_type, v.encryption_key_enc, v.encryption_iv, v.encryption_tag, v.storage_path, v.size_bytes
 		FROM file_versions v JOIN files f ON f.id = v.file_id
 		WHERE v.file_id = ? AND v.version_no = ?`, fileID, versionNo,
-	).Scan(&name, &mimeType, &encKey, &iv, &tag, &path)
+	).Scan(&name, &mimeType, &encKey, &iv, &tag, &path, &sizeBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		httpapi.Error(w, http.StatusNotFound, "not_found", "Version not found")
 		return
@@ -250,10 +251,5 @@ func (a *App) streamVersion(w http.ResponseWriter, r *http.Request, disposition 
 		httpapi.Error(w, http.StatusInternalServerError, "crypto_error", err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Disposition", disposition+"; filename=\""+sanitizeFilename(name)+"\"")
-	if err := storage.DecryptFileToWriter(path, w, fileKey); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "stream_error", err.Error())
-		return
-	}
+	serveDecryptedBlob(w, r, path, fileKey, name, mimeType, sizeBytes, disposition)
 }

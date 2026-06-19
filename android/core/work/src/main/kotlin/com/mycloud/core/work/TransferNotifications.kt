@@ -37,6 +37,27 @@ class TransferNotifications @Inject constructor(
         notify(notificationId, build(name, progress, ongoing = true, upload = upload))
     }
 
+    /**
+     * Time-throttled progress mutator for tight per-byte/per-percent loops: posts a
+     * progress notification at most once per [PROGRESS_THROTTLE_MS] (always letting
+     * 100% through). [lastEmitMs] is the caller's running timestamp; returns the
+     * timestamp to keep for the next call.
+     */
+    fun notifyProgressThrottled(
+        notificationId: Int,
+        name: String,
+        progress: Int,
+        upload: Boolean,
+        lastEmitMs: Long,
+    ): Long {
+        val now = System.currentTimeMillis()
+        if (progress >= 100 || now - lastEmitMs >= PROGRESS_THROTTLE_MS) {
+            notifyProgress(notificationId, name, progress, upload)
+            return now
+        }
+        return lastEmitMs
+    }
+
     fun notifyComplete(notificationId: Int, name: String, success: Boolean, upload: Boolean) {
         val verb = if (upload) "Upload" else "Download"
         val text = if (success) "$verb complete" else "$verb failed"
@@ -70,6 +91,8 @@ class TransferNotifications @Inject constructor(
     }
 
     private fun createChannel() {
+        // NotificationChannel is API 26+ (O); on older releases channels don't exist.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -81,5 +104,6 @@ class TransferNotifications @Inject constructor(
 
     private companion object {
         const val CHANNEL_ID = "transfers"
+        const val PROGRESS_THROTTLE_MS = 500L
     }
 }

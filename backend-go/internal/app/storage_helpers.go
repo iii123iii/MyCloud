@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -570,12 +571,122 @@ func (a *App) serveFile(w http.ResponseWriter, r *http.Request, fileID, disposit
 		httpapi.Error(w, http.StatusInternalServerError, "crypto_error", err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, sanitizeFilename(name)))
-	if err := storage.DecryptFileToWriter(path, w, fileKey); err != nil {
-		httpapi.Error(w, http.StatusInternalServerError, "stream_error", err.Error())
+	serveDecryptedBlob(w, r, path, fileKey, name, mimeType, sizeBytes, disposition)
+}
+
+// serveDecryptedBlob streams a decrypted blob to the client with HTTP Range
+// support, decrypting only the chunks a range touches. It always advertises
+// Accept-Ranges and sets Content-Length. A satisfiable single Range over a
+// uniformly-chunked blob yields 206 + Content-Range; an unsatisfiable range
+// yields 416; no/invalid/multi range — or a blob without the uniform layout —
+// streams the whole file (200). The caller must not have written the body yet
+// (it may still have set headers such as ETag).
+//
+// On a decrypt error the response is already committed (status + Content-Length
+// sent on the first write), so we can't switch to a JSON error; the short read
+// signals failure to the client. Pre-stream failures (missing file, bad key)
+// surface on the first chunk and likewise truncate — matching the prior
+// streaming behaviour, now without corrupting the body with a late error
+// envelope.
+func serveDecryptedBlob(w http.ResponseWriter, r *http.Request, path string, key []byte, name, mimeType string, size int64, disposition string) {
+	// Confirm the blob exists before committing any response headers/status, so
+	// a missing file (DB row without its blob) returns a clean error instead of
+	// a 200 truncated against its Content-Length.
+	if _, err := os.Stat(path); err != nil {
+		httpapi.Error(w, http.StatusInternalServerError, "stream_error", "file content unavailable")
 		return
 	}
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, sanitizeFilename(name)))
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		if canRange, err := storage.SupportsRange(path, size); err == nil && canRange {
+			start, end, result := parseByteRange(rangeHeader, size)
+			switch result {
+			case rangeUnsatisfiable:
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+				httpapi.Error(w, http.StatusRequestedRangeNotSatisfiable, "range_not_satisfiable",
+					"requested range not satisfiable")
+				return
+			case rangeOK:
+				length := end - start + 1
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+				w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
+				w.WriteHeader(http.StatusPartialContent)
+				_ = storage.DecryptRangeToWriter(path, w, key, start, length, size)
+				return
+			}
+			// rangeFull: fall through to a full 200 stream.
+		}
+		// SupportsRange said no (legacy/non-uniform) or errored: full stream.
+	}
+
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	_ = storage.DecryptFileToWriter(path, w, key)
+}
+
+const (
+	rangeFull          = "full"          // no/invalid/multi range → serve whole file
+	rangeOK            = "ok"            // satisfiable single range
+	rangeUnsatisfiable = "unsatisfiable" // syntactically valid but out of bounds → 416
+)
+
+// parseByteRange parses a single HTTP "bytes=" Range header against a known
+// size and returns an inclusive [start, end]. Supports "start-end", open-ended
+// "start-" (to EOF) and suffix "-N" (last N bytes). Multi-range and malformed
+// values resolve to rangeFull so the caller serves the whole file rather than
+// erroring.
+func parseByteRange(header string, size int64) (start, end int64, result string) {
+	const prefix = "bytes="
+	if !strings.HasPrefix(header, prefix) {
+		return 0, 0, rangeFull
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if spec == "" || strings.Contains(spec, ",") { // multi-range unsupported
+		return 0, 0, rangeFull
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
+		return 0, 0, rangeFull
+	}
+	startStr := strings.TrimSpace(spec[:dash])
+	endStr := strings.TrimSpace(spec[dash+1:])
+	if size <= 0 {
+		return 0, 0, rangeUnsatisfiable
+	}
+
+	if startStr == "" {
+		// Suffix form: last N bytes.
+		n, err := strconv.ParseInt(endStr, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, 0, rangeFull
+		}
+		if n > size {
+			n = size
+		}
+		return size - n, size - 1, rangeOK
+	}
+
+	s, err := strconv.ParseInt(startStr, 10, 64)
+	if err != nil || s < 0 {
+		return 0, 0, rangeFull
+	}
+	if s >= size {
+		return 0, 0, rangeUnsatisfiable
+	}
+	e := size - 1
+	if endStr != "" {
+		e, err = strconv.ParseInt(endStr, 10, 64)
+		if err != nil || e < s {
+			return 0, 0, rangeFull
+		}
+		if e >= size {
+			e = size - 1
+		}
+	}
+	return s, e, rangeOK
 }
 
 func (a *App) removeEncryptedFile(path string) {

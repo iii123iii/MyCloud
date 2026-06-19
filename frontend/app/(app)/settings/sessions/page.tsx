@@ -142,7 +142,7 @@ export function SessionsView() {
     try {
       await sessionsApi.revoke(s.jti);
       toast.success("Device signed out");
-      const label = s.device_label || "Unknown device";
+      const label = s.device_name || s.device_label || "Unknown device";
       setLiveMessage(`${label} signed out.`);
       mutate();
     } catch (err) {
@@ -273,7 +273,7 @@ export function SessionsView() {
                       const browser = detectBrowser(s.user_agent);
                       const browserLabel = browser === "Other" ? "Browser" : browser;
                       const isRevoking = revoking === s.jti;
-                      const deviceLabel = s.device_label || "Unknown device";
+                      const deviceLabel = s.device_name || s.device_label || "Unknown device";
                       const lastSeenRel = formatRelative(s.last_seen_at);
                       const lastSeenAbs = formatServerDateTime(s.last_seen_at);
                       const expiresRel = s.expires_at ? formatRelative(s.expires_at) : null;

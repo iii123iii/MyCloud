@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"mycloud/backend-go/internal/auth"
 )
 
 // ─── Filename edges ────────────────────────────────────────────────────────
@@ -138,23 +139,19 @@ func TestReadLimitOffset_Clamping(t *testing.T) {
 // ─── Time edges: token issued with exp at exactly t=0 ──────────────────────
 
 func TestToken_ImmediateExpiry(t *testing.T) {
-	a := newTestApp(t)
-	// Make access TTL 0 — token expired the instant it was minted.
-	a.Auth = a.Auth // no-op to satisfy "a used"
-	a.Config.AccessTokenTTL = 0
-	// Issue with a fresh manager that uses 0 TTL.
-	mgr := a.Auth
+	// A token whose TTL has already elapsed must fail Parse. Manager TTLs are
+	// captured at construction (sign() reads m.accessTTL), so to test expiry we
+	// mint a manager with an access TTL already in the past. The previous
+	// version set a.Config.AccessTokenTTL after the manager was built — a no-op
+	// that issued a normal 900s token and never exercised expiry at all.
+	mgr := auth.NewManager(strings.Repeat("a", 32), -1, 600, nil)
 	pair, err := mgr.IssuePair("u-test", "user")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("IssuePair: %v", err)
 	}
-	// The token's exp is now() + (cfg TTL = whatever). To force expiry we
-	// need a token whose exp is in the past — easier: parse it after
-	// sleeping past the TTL OR just verify no panic on the boundary value.
-	if pair["access_token"].(string) == "" {
-		t.Error("expected non-empty token even with 0 TTL")
+	if _, err := mgr.Parse(pair["access_token"].(string)); err == nil {
+		t.Error("Parse should reject an already-expired access token")
 	}
-	time.Sleep(1 * time.Second) // belt-and-braces
 }
 
 // ─── Empty inputs ──────────────────────────────────────────────────────────

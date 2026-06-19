@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tus/tusd/v2/pkg/filelocker"
 	"github.com/tus/tusd/v2/pkg/filestore"
 	tusd "github.com/tus/tusd/v2/pkg/handler"
 
+	"mycloud/backend-go/internal/logging"
 	"mycloud/backend-go/internal/storage"
 )
 
@@ -65,6 +67,16 @@ func (a *App) mountTus(basePath string) (http.Handler, error) {
 			if userID == "" {
 				return tusd.HTTPResponse{}, errors.New("unauthorized")
 			}
+			// Concatenation guard: tusd fires this hook whenever ANY upload
+			// reaches offset==size — including each *partial* upload when a
+			// client uses parallelUploads (the tus concatenation extension). Only
+			// a normal or final-concat upload should be materialised into a file;
+			// committing a partial slice would create a bogus file per slice. The
+			// web client keeps parallelUploads off, but this keeps the server
+			// correct for any client that turns it on.
+			if hook.Upload.IsPartial {
+				return tusd.HTTPResponse{}, nil
+			}
 			filename := strings.TrimSpace(hook.Upload.MetaData["filename"])
 			if filename == "" {
 				filename = "untitled"
@@ -100,6 +112,7 @@ func (a *App) mountTus(basePath string) (http.Handler, error) {
 			}
 			hasher := sha256.New()
 			teed := io.TeeReader(plaintext, hasher)
+			encStart := time.Now()
 			size, encErr := storage.EncryptStream(teed, tmpFile, fileKey)
 			closeErr := tmpFile.Close()
 			if encErr != nil {
@@ -111,6 +124,15 @@ func (a *App) mountTus(basePath string) (http.Handler, error) {
 				return tusd.HTTPResponse{}, closeErr
 			}
 			contentHash := hex.EncodeToString(hasher.Sum(nil))
+			// The client is still blocked on this final PATCH while we re-read the
+			// assembled plaintext and write the ciphertext, so this duration is on
+			// the perceived upload time. Logged to locate the upload bottleneck
+			// (transfer vs. finish-encrypt) — see plan workstream B0.
+			if dur := time.Since(encStart); dur > 0 && size > 0 {
+				logging.FromContext(hook.Context).Info("tus finish: encrypted assembled upload",
+					"bytes", size, "encrypt_ms", dur.Milliseconds(),
+					"mib_per_s", float64(size)/(1024*1024)/dur.Seconds())
+			}
 
 			// Resolve attribution: uploading into a shared folder (editor access)
 			// stores the file under the folder OWNER. Re-checks access here so a

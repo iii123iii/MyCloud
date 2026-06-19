@@ -37,8 +37,12 @@ class RootViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            if (appLockManager.enabled.first()) appLockManager.lock()
+            // Restore first, then engage the lock only if we actually have an
+            // authenticated session — avoids a LOCKED flicker for logged-out users.
             authRepository.restoreSession()
+            if (authRepository.authState.value == AuthState.AUTHENTICATED && appLockManager.enabled.first()) {
+                appLockManager.lock()
+            }
         }
         // Hold the realtime socket open only while signed in.
         viewModelScope.launch {

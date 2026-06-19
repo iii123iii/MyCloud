@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.mycloud.feature.photos"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

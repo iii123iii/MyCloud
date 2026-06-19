@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.merge
@@ -56,6 +57,7 @@ data class BrowserUiState(
     val viewMode: ViewMode = ViewMode.GRID,
     val selectedIds: Set<String> = emptySet(),
     val selectedFolderIds: Set<String> = emptySet(),
+    val isRefreshing: Boolean = false,
 ) {
     val inSelectionMode: Boolean get() = selectedIds.isNotEmpty() || selectedFolderIds.isNotEmpty()
     val selectionCount: Int get() = selectedIds.size + selectedFolderIds.size
@@ -83,13 +85,24 @@ class BrowserViewModel @Inject constructor(
     /** Emits on a realtime change OR when uploads finish; the screen refreshes paging. */
     val refreshSignals: Flow<Unit> = merge(realtimeRepository.fileEvents, localRefresh)
 
+    /**
+     * Bumped to force the [files] Pager to rebuild (re-running the RemoteMediator
+     * REFRESH). Driven by [refreshSignals] so a finished upload (and realtime edits)
+     * pulls the new row into the paged list without a manual pull-to-refresh.
+     */
+    private val pagingRefreshTrigger = MutableStateFlow(0)
+
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     /** Transient user-facing messages (e.g. a move/copy failure) shown as a snackbar. */
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    /** Paged files for the active folder + sort. Cached so config changes don't refetch. */
-    val files: Flow<PagingData<FileNode>> = args
+    /**
+     * Paged files for the active folder + sort. Cached so config changes don't refetch.
+     * Rebuilt whenever [args] changes OR [pagingRefreshTrigger] is bumped (e.g. an upload
+     * finished), which re-runs the RemoteMediator REFRESH and surfaces new rows.
+     */
+    val files: Flow<PagingData<FileNode>> = combine(args, pagingRefreshTrigger) { a, _ -> a }
         .flatMapLatest { fileRepository.pagedFiles(it.folderId, it.sort, it.order) }
         .cachedIn(viewModelScope)
 
@@ -116,9 +129,13 @@ class BrowserViewModel @Inject constructor(
                 previousActive = active
             }
         }
-        // Any refresh signal (realtime or upload-complete) reloads cached subfolders.
+        // Any refresh signal (realtime or upload-complete) reloads cached subfolders
+        // and rebuilds the paged file list so new/changed files appear immediately.
         viewModelScope.launch {
-            refreshSignals.collect { folderRepository.refreshFolders(_ui.value.folderId) }
+            refreshSignals.collect {
+                folderRepository.refreshFolders(_ui.value.folderId)
+                pagingRefreshTrigger.update { it + 1 }
+            }
         }
         // This VM is Activity-scoped and survives sign-out, so its one-time load
         // wouldn't re-run on re-login. Reset to root + reload whenever the signed-in
@@ -172,7 +189,36 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun refresh() {
-        viewModelScope.launch { folderRepository.refreshFolders(_ui.value.folderId) }
+        _ui.update { it.copy(isRefreshing = true) }
+        viewModelScope.launch {
+            try {
+                folderRepository.refreshFolders(_ui.value.folderId)
+            } finally {
+                _ui.update { it.copy(isRefreshing = false) }
+            }
+        }
+    }
+
+    /**
+     * Jump straight to a breadcrumb level. [folderId] == null means "My Files"
+     * (root); any other id is one of the current path's ancestors. The back stack
+     * is rebuilt from the breadcrumb trail so system-back keeps working.
+     */
+    fun navigateToBreadcrumb(folderId: String?) {
+        if (folderId == _ui.value.folderId) return
+        backStack.clear()
+        backStack.addLast(Crumb(null, "My Files"))
+        if (folderId != null) {
+            val title = _ui.value.breadcrumbs.firstOrNull { it.id == folderId }?.name ?: _ui.value.title
+            for (crumb in _ui.value.breadcrumbs) {
+                if (crumb.id == folderId) break
+                backStack.addLast(Crumb(crumb.id, crumb.name))
+            }
+            navigateTo(folderId, title)
+        } else {
+            backStack.removeLast()
+            navigateTo(null, "My Files")
+        }
     }
 
     fun setSort(sort: SortKey, order: SortOrder) {
@@ -200,16 +246,20 @@ class BrowserViewModel @Inject constructor(
         val parent = _ui.value.folderId
         clearSelection()
         viewModelScope.launch {
-            fileIds.forEach { fileRepository.deleteFile(it) }
-            folderIds.forEach { folderRepository.deleteFolder(it) }
+            val results = fileIds.map { fileRepository.deleteFile(it) } +
+                folderIds.map { folderRepository.deleteFolder(it) }
             if (folderIds.isNotEmpty()) folderRepository.refreshFolders(parent)
+            reportFailures(results, "delete")
         }
     }
 
     fun starSelected(starred: Boolean) {
         val ids = _ui.value.selectedIds
         clearSelection()
-        viewModelScope.launch { ids.forEach { fileRepository.setStarred(it, starred) } }
+        viewModelScope.launch {
+            val results = ids.map { fileRepository.setStarred(it, starred) }
+            reportFailures(results, if (starred) "star" else "unstar")
+        }
     }
 
     /** Rename a single selected file or folder. */
@@ -219,12 +269,14 @@ class BrowserViewModel @Inject constructor(
         val parent = _ui.value.folderId
         clearSelection()
         viewModelScope.launch {
-            if (isFolder) {
-                folderRepository.renameFolder(id, trimmed)
+            val result = if (isFolder) {
+                val rename = folderRepository.renameFolder(id, trimmed)
                 folderRepository.refreshFolders(parent)
+                rename
             } else {
                 fileRepository.rename(id, trimmed)
             }
+            reportFailures(listOf(result), "rename")
         }
     }
 
@@ -269,10 +321,26 @@ class BrowserViewModel @Inject constructor(
         _messages.tryEmit(reason ?: "Couldn't $verb ${failures.size} item(s)")
     }
 
-    fun createFolder(name: String) {
+    /**
+     * Create a folder under the current parent. [onResult] is invoked with `true`
+     * on success (so the dialog can close) and `false` on failure (dialog stays
+     * open and a snackbar explains why).
+     */
+    fun createFolder(name: String, onResult: (Boolean) -> Unit = {}) {
         val trimmed = name.trim()
-        if (trimmed.isEmpty()) return
-        viewModelScope.launch { folderRepository.createFolder(trimmed, _ui.value.folderId) }
+        if (trimmed.isEmpty()) {
+            onResult(false)
+            return
+        }
+        viewModelScope.launch {
+            val result = folderRepository.createFolder(trimmed, _ui.value.folderId)
+            if (result is NetworkResult.Success) {
+                onResult(true)
+            } else {
+                _messages.tryEmit(result.userMessageOrNull() ?: "Couldn't create folder")
+                onResult(false)
+            }
+        }
     }
 
     fun upload(uri: String, displayName: String) {

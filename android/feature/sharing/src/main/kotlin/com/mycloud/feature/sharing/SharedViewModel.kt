@@ -18,8 +18,13 @@ import javax.inject.Inject
 data class SharedUiState(
     val shares: List<Share> = emptyList(),
     val grants: List<Grant> = emptyList(),
+    // Grants shared WITH the current user (read-only; the recipient can't revoke them).
+    val incomingGrants: List<Grant> = emptyList(),
     val isLoading: Boolean = false,
-    val error: String? = null,
+    // Per-list errors so a failure in one tab doesn't bleed into the others.
+    val sharesError: String? = null,
+    val grantsError: String? = null,
+    val incomingGrantsError: String? = null,
 )
 
 @HiltViewModel
@@ -35,31 +40,49 @@ class SharedViewModel @Inject constructor(
     }
 
     fun refresh() {
-        _state.update { it.copy(isLoading = true, error = null) }
+        _state.update {
+            it.copy(
+                isLoading = true,
+                sharesError = null,
+                grantsError = null,
+                incomingGrantsError = null,
+            )
+        }
         viewModelScope.launch {
             val sharesResult = shareRepository.listShares()
-            val grantsResult = shareRepository.listGrants()
-            val shares = (sharesResult as? NetworkResult.Success)?.data.orEmpty()
-            val grants = (grantsResult as? NetworkResult.Success)?.data.orEmpty()
-            // Surface a real failure instead of showing it as an empty list.
-            val error = sharesResult.userMessageOrNull() ?: grantsResult.userMessageOrNull()
-            _state.update {
-                it.copy(shares = shares, grants = grants, isLoading = false, error = error)
+            val grantsResult = shareRepository.listGrants(direction = "outgoing")
+            val incomingResult = shareRepository.listGrants(direction = "incoming")
+            // Surface a real failure instead of showing it as an empty list, scoped
+            // to the list that actually failed.
+            _state.update { previous ->
+                previous.copy(
+                    shares = (sharesResult as? NetworkResult.Success)?.data ?: previous.shares,
+                    grants = (grantsResult as? NetworkResult.Success)?.data ?: previous.grants,
+                    incomingGrants = (incomingResult as? NetworkResult.Success)?.data ?: previous.incomingGrants,
+                    isLoading = false,
+                    sharesError = sharesResult.userMessageOrNull(),
+                    grantsError = grantsResult.userMessageOrNull(),
+                    incomingGrantsError = incomingResult.userMessageOrNull(),
+                )
             }
         }
     }
 
     fun revokeShare(id: String) {
         viewModelScope.launch {
-            shareRepository.deleteShare(id)
-            refresh()
+            when (val result = shareRepository.deleteShare(id)) {
+                is NetworkResult.Success -> refresh()
+                else -> _state.update { it.copy(sharesError = result.userMessageOrNull()) }
+            }
         }
     }
 
     fun revokeGrant(id: String) {
         viewModelScope.launch {
-            shareRepository.deleteGrant(id)
-            refresh()
+            when (val result = shareRepository.deleteGrant(id)) {
+                is NetworkResult.Success -> refresh()
+                else -> _state.update { it.copy(grantsError = result.userMessageOrNull()) }
+            }
         }
     }
 

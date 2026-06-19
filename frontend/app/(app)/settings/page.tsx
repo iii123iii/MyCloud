@@ -17,6 +17,7 @@ import {
   ShieldAlert,
   Settings,
   Smartphone,
+  MonitorSmartphone,
   Trash2,
   User2,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
 import { SessionsView } from "./sessions/page";
+import { LinkDeviceView } from "./devices/page";
 import { DeveloperView } from "./developer/page";
 import { SectionHeader } from "@/components/settings/SectionHeader";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -75,6 +77,7 @@ const TAB_ITEMS = [
   { value: "password", label: "Password", icon: KeyRound },
   { value: "activity", label: "Activity", icon: ActivityIcon },
   { value: "sessions", label: "Sessions", icon: Smartphone },
+  { value: "devices", label: "Link a device", icon: MonitorSmartphone },
   { value: "developer", label: "Developer", icon: Code2 },
 ] as const;
 
@@ -385,6 +388,11 @@ export default function SettingsPage() {
           {/* ─── Sessions ─── */}
           <TabsContent value="sessions" className="space-y-6 mt-0">
             <SessionsView />
+          </TabsContent>
+
+          {/* ─── Link a device ─── */}
+          <TabsContent value="devices" className="space-y-6 mt-0">
+            <LinkDeviceView />
           </TabsContent>
 
           {/* ─── Developer ─── */}

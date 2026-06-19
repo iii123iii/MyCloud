@@ -63,10 +63,24 @@ class ShareViewModel @Inject constructor(
         _state.update { ShareUiState() }
     }
 
+    /** Auto-clear the transient "Shared with …" confirmation. */
+    fun clearGrantMessage() = _state.update { it.copy(grantMessage = null) }
+
     /** Grant a person access by username or email. */
     fun addPerson(fileId: String?, folderId: String?) {
         val who = _state.value.grantee.trim()
         if (who.isEmpty()) return
+        // Validate before hitting the network: an email needs a plausible address,
+        // a bare username must be a sane handle.
+        val valid = if (who.contains('@')) {
+            EMAIL_REGEX.matches(who)
+        } else {
+            USERNAME_REGEX.matches(who)
+        }
+        if (!valid) {
+            _state.update { it.copy(grantError = "Enter a valid username or email.") }
+            return
+        }
         if (!granting.compareAndSet(false, true)) return
         val permission = _state.value.grantPermission
         _state.update { it.copy(isGranting = true, grantError = null, grantMessage = null) }
@@ -114,5 +128,11 @@ class ShareViewModel @Inject constructor(
                 creating.set(false)
             }
         }
+    }
+
+    private companion object {
+        val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
+        // Letters, digits, and . _ - ; 2–64 chars, no leading/trailing separators.
+        val USERNAME_REGEX = Regex("^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
     }
 }

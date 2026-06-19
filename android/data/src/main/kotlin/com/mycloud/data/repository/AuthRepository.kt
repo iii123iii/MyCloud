@@ -23,6 +23,14 @@ interface AuthRepository {
 
     suspend fun login(email: String, password: String): NetworkResult<Unit>
 
+    /**
+     * Sign in by linking this device to a QR shown on an already-authenticated
+     * browser. Points the client at [serverUrl] (from the QR), claims the [code]
+     * with this device's identity, then polls until the browser approves —
+     * flipping [authState] to AUTHENTICATED on success.
+     */
+    suspend fun linkViaQr(serverUrl: String, code: String, verifier: String): NetworkResult<Unit>
+
     suspend fun changePassword(oldPassword: String, newPassword: String): NetworkResult<Unit>
 
     /** Permanently delete the account after re-confirming the current password.

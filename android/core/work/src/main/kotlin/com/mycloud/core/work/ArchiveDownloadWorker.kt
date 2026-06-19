@@ -12,6 +12,7 @@ import com.mycloud.core.network.api.TransferApi
 import com.mycloud.core.network.dto.DownloadArchiveRequestDto
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import java.io.File
 
 /**
@@ -41,6 +42,7 @@ class ArchiveDownloadWorker @AssistedInject constructor(
         val (fileIds, folderIds) = selection
         val name = displayName()
         val notificationId = id.hashCode()
+        var outFile: File? = null
 
         return try {
             setForeground(notifications.foregroundInfo(id, name, 0, upload = false))
@@ -59,21 +61,26 @@ class ArchiveDownloadWorker @AssistedInject constructor(
                 return if (retryable) Result.retry() else Result.failure()
             }
 
-            val dir = applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            val outFile = File(dir, name)
+            val dir = applicationContext.downloadOutputDir()
+            val file = dir.reserveUniqueFile(name.safeOutputFileName("mycloud.zip"))
+            outFile = file
             responseBody.byteStream().use { input ->
-                outFile.outputStream().use { output -> input.copyTo(output) }
+                file.outputStream().use { output -> input.copyTo(output) }
             }
 
             val outUri = FileProvider.getUriForFile(
                 applicationContext,
                 "${applicationContext.packageName}.fileprovider",
-                outFile,
+                file,
             )
             requestFile.delete()
             notifications.notifyComplete(notificationId, name, success = true, upload = false)
             Result.success(workDataOf(TransferKeys.KEY_OUTPUT_URI to outUri.toString()))
+        } catch (e: CancellationException) {
+            runCatching { outFile?.delete() }
+            throw e
         } catch (e: Exception) {
+            runCatching { outFile?.delete() }
             if (runAttemptCount < MAX_ATTEMPTS) {
                 Result.retry() // keep the request file so the retry can re-read it
             } else {
@@ -85,6 +92,27 @@ class ArchiveDownloadWorker @AssistedInject constructor(
     }
 
     private fun displayName(): String = inputData.getString(TransferKeys.KEY_NAME) ?: "mycloud.zip"
+
+    private fun Context.downloadOutputDir(): File =
+        getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: File(cacheDir, "downloads").apply { mkdirs() }
+
+    private fun String.safeOutputFileName(fallback: String): String =
+        replace('/', '_').replace('\\', '_').ifBlank { fallback }
+
+    private fun File.reserveUniqueFile(fileName: String): File {
+        mkdirs()
+        val dot = fileName.lastIndexOf('.').takeIf { it > 0 }
+        val base = dot?.let { fileName.substring(0, it) } ?: fileName
+        val ext = dot?.let { fileName.substring(it) } ?: ""
+        var index = 0
+        while (true) {
+            val candidateName = if (index == 0) fileName else "$base ($index)$ext"
+            val candidate = File(this, candidateName)
+            if (candidate.createNewFile()) return candidate
+            index++
+        }
+    }
 
     private companion object {
         const val MAX_ATTEMPTS = 3

@@ -5,6 +5,7 @@ import com.mycloud.core.model.AuthState
 import com.mycloud.core.network.api.TokenRefreshApi
 import com.mycloud.core.network.auth.TokenProvider
 import com.mycloud.core.network.dto.RefreshRequestDto
+import com.mycloud.core.work.TransferManager
 import com.mycloud.data.mapper.toTokenBundle
 import com.mycloud.data.session.AuthStateHolder
 import com.mycloud.data.session.SessionCacheCleaner
@@ -24,6 +25,7 @@ class TokenProviderImpl @Inject constructor(
     private val refreshApi: TokenRefreshApi,
     private val authStateHolder: AuthStateHolder,
     private val cacheCleaner: SessionCacheCleaner,
+    private val transferManager: TransferManager,
 ) : TokenProvider {
 
     private val refreshLock = Any()
@@ -57,6 +59,7 @@ class TokenProviderImpl @Inject constructor(
         // Involuntary sign-out (refresh token rejected/expired): clear tokens AND
         // wipe the local cache so the next user on the device can't read it.
         runBlocking {
+            transferManager.cancelAndPruneTransfers()
             tokenStore.clear()
             cacheCleaner.clear()
         }

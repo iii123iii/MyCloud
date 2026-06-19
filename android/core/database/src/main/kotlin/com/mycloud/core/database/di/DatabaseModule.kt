@@ -12,8 +12,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import javax.inject.Singleton
 
 @Module
@@ -26,14 +25,14 @@ object DatabaseModule {
         @ApplicationContext context: Context,
         dbKeyProvider: DbKeyProvider,
     ): MyCloudDatabase {
-        // Ensure the SQLCipher native library is loaded before the encrypted DB opens.
-        SQLiteDatabase.loadLibs(context)
+        // Load the SQLCipher native library before the encrypted DB opens.
+        System.loadLibrary("sqlcipher")
         // A pre-existing plaintext cache from before encryption can't be opened with
         // a key, so we use a new filename and best-effort drop the old one. The cache
         // is disposable (server is source of truth), so this loses nothing.
         runCatching { context.deleteDatabase("mycloud.db") }
         return Room.databaseBuilder(context, MyCloudDatabase::class.java, "mycloud-enc.db")
-            .openHelperFactory(SupportFactory(dbKeyProvider.passphrase()))
+            .openHelperFactory(SupportOpenHelperFactory(dbKeyProvider.passphrase()))
             // Phase 1: destructive fallback. Real migrations + tests land with the
             // schema as it stabilises (see plan's migration-testing note).
             .fallbackToDestructiveMigration()

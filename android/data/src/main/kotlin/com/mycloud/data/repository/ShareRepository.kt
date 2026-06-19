@@ -28,7 +28,12 @@ interface ShareRepository {
         singleView: Boolean,
     ): NetworkResult<Share>
     suspend fun deleteShare(id: String): NetworkResult<Unit>
-    suspend fun listGrants(): NetworkResult<List<Grant>>
+
+    /**
+     * List per-user grants. [direction] = "outgoing" returns grants the current
+     * user created (shared by me); "incoming" returns grants shared WITH the user.
+     */
+    suspend fun listGrants(direction: String = "outgoing"): NetworkResult<List<Grant>>
 
     /** Grant a person (by username or email) access to a file or folder. */
     suspend fun createGrant(
@@ -79,8 +84,9 @@ class ShareRepositoryImpl @Inject constructor(
     override suspend fun deleteShare(id: String): NetworkResult<Unit> =
         safeUnitApiCall(json) { shareApi.deleteShare(id) }
 
-    override suspend fun listGrants(): NetworkResult<List<Grant>> =
-        safeApiCall(json) { shareApi.listGrants() }.map { it.grants.map { dto -> dto.toDomain() } }
+    override suspend fun listGrants(direction: String): NetworkResult<List<Grant>> =
+        safeApiCall(json) { shareApi.listGrants(direction = direction) }
+            .map { it.grants.map { dto -> dto.toDomain() } }
 
     override suspend fun createGrant(
         fileId: String?,

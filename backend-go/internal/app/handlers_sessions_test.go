@@ -20,10 +20,10 @@ func TestHandleListMySessions_FlagsCurrentJTI(t *testing.T) {
 	a.mock.ExpectQuery("SELECT jti").
 		WithArgs("u-test").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"jti", "device_label", "user_agent", "ip_address", "created_at", "last_seen_at", "expires_at",
+			"jti", "device_label", "device_name", "user_agent", "ip_address", "created_at", "last_seen_at", "expires_at",
 		}).
-			AddRow("jti-test", "Chrome on macOS", "Mozilla", "1.1.1.1", now, now, nil).
-			AddRow("jti-other", "Firefox on Linux", "Mozilla", "2.2.2.2", now, now, nil))
+			AddRow("jti-test", "Chrome on macOS", "", "Mozilla", "1.1.1.1", now, now, nil).
+			AddRow("jti-other", "Firefox on Linux", "", "Mozilla", "2.2.2.2", now, now, nil))
 	w := rec()
 	r := authedRequest("GET", "/me/sessions", "")
 	a.handleListMySessions(w, r)

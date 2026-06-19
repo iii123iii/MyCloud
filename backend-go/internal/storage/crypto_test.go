@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +200,133 @@ func TestWrapKey_BundlesAreUnique(t *testing.T) {
 	}
 	if a.EncKeyHex == b.EncKeyHex {
 		t.Errorf("WrapKey produced identical ciphertext for same input — IV is broken")
+	}
+}
+
+// smallReader returns at most `max` bytes per Read, simulating a source that
+// delivers data in small pieces (e.g. a network multipart part). Proves
+// EncryptStream produces a uniform chunk layout regardless of read granularity
+// — the property DecryptRangeToWriter's arithmetic seek depends on.
+type smallReader struct {
+	data []byte
+	max  int
+}
+
+func (s *smallReader) Read(p []byte) (int, error) {
+	if len(s.data) == 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if n > s.max {
+		n = s.max
+	}
+	if n > len(s.data) {
+		n = len(s.data)
+	}
+	copy(p, s.data[:n])
+	s.data = s.data[n:]
+	return n, nil
+}
+
+// Even when the source dribbles bytes in odd-sized reads, every chunk except
+// the last must be exactly chunkSize, so the on-disk size matches the uniform
+// layout formula. Without io.ReadFull this would produce many tiny chunks.
+func TestEncryptStream_UniformChunkLayout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blob.enc")
+	key := randBytes(t, 32)
+	plain := randBytes(t, 2*chunkSize+12345) // two full chunks + partial tail
+
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	n, err := EncryptStream(&smallReader{data: append([]byte(nil), plain...), max: 7919}, out, key)
+	if err != nil {
+		t.Fatalf("EncryptStream: %v", err)
+	}
+	out.Close()
+	if n != int64(len(plain)) {
+		t.Fatalf("returned size %d, want %d", n, len(plain))
+	}
+	st, _ := os.Stat(path)
+	if st.Size() != expectedEncryptedSize(int64(len(plain))) {
+		t.Errorf("on-disk size %d, expected uniform %d", st.Size(), expectedEncryptedSize(int64(len(plain))))
+	}
+	var got bytes.Buffer
+	if err := DecryptFileToWriter(path, &got, key); err != nil {
+		t.Fatalf("DecryptFileToWriter: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), plain) {
+		t.Errorf("round-trip mismatch")
+	}
+}
+
+// Byte ranges decrypt to exactly the corresponding plaintext slice, including
+// chunk-boundary spans and the partial last chunk.
+func TestDecryptRangeToWriter_Slices(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blob.enc")
+	key := randBytes(t, 32)
+	plain := randBytes(t, 2*chunkSize+5000)
+
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := EncryptStream(bytes.NewReader(plain), out, key); err != nil {
+		t.Fatalf("EncryptStream: %v", err)
+	}
+	out.Close()
+
+	size := int64(len(plain))
+	cases := []struct{ start, length int64 }{
+		{0, 100},                // head of first chunk
+		{chunkSize - 50, 100},   // spans chunk 0 → 1 boundary
+		{chunkSize, 200},        // exact start of chunk 1
+		{2*chunkSize + 1, 4999}, // into the partial last chunk
+		{0, size},               // whole file via a single range
+		{size - 1, 1},           // final byte
+		{1234567, 1000000},      // arbitrary mid-file span
+	}
+	for _, c := range cases {
+		var got bytes.Buffer
+		if err := DecryptRangeToWriter(path, &got, key, c.start, c.length, size); err != nil {
+			t.Fatalf("range [%d,+%d): %v", c.start, c.length, err)
+		}
+		want := plain[c.start : c.start+c.length]
+		if !bytes.Equal(got.Bytes(), want) {
+			t.Errorf("range [%d,+%d) mismatch: got %d bytes, want %d", c.start, c.length, got.Len(), len(want))
+		}
+	}
+}
+
+// A blob whose size doesn't match the uniform layout (legacy single-blob or
+// pre-uniform-chunking) reports ErrRangeUnsupported so callers fall back to a
+// full 200 stream.
+func TestDecryptRangeToWriter_NonUniformFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.enc")
+	if err := os.WriteFile(path, randBytes(t, 1234), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var got bytes.Buffer
+	err := DecryptRangeToWriter(path, &got, randBytes(t, 32), 0, 100, 5000)
+	if !ErrRangeUnsupported(err) {
+		t.Errorf("expected ErrRangeUnsupported, got %v", err)
+	}
+}
+
+func TestDecryptRangeToWriter_OutOfBounds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blob.enc")
+	key := randBytes(t, 32)
+	out, _ := os.Create(path)
+	_, _ = EncryptStream(bytes.NewReader(randBytes(t, 1000)), out, key)
+	out.Close()
+	var got bytes.Buffer
+	if err := DecryptRangeToWriter(path, &got, key, 900, 200, 1000); err == nil {
+		t.Errorf("expected out-of-bounds error for [900,1100) over size 1000")
 	}
 }
 

@@ -9,7 +9,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -85,4 +87,12 @@ class TransferManager @Inject constructor(
 
     fun observeTransfers(): Flow<List<WorkInfo>> =
         workManager.getWorkInfosByTagFlow(TransferKeys.TAG_TRANSFER)
+
+    /** Cancel active transfer work and remove terminal history from WorkManager's DB. */
+    suspend fun cancelAndPruneTransfers() {
+        withContext(Dispatchers.IO) {
+            runCatching { workManager.cancelAllWorkByTag(TransferKeys.TAG_TRANSFER).result.get() }
+            runCatching { workManager.pruneWork().result.get() }
+        }
+    }
 }

@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "com.mycloud.feature.filedetail"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26
@@ -39,6 +39,8 @@ dependencies {
     implementation(project(":core:media"))
     implementation(project(":data"))
 
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.hilt.navigation.compose)

@@ -21,6 +21,7 @@ import com.mycloud.core.network.result.safeApiCall
 import com.mycloud.data.mapper.toDomain
 import com.mycloud.data.paging.FileRemoteMediator
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -93,17 +94,29 @@ class FileRepositoryImpl @Inject constructor(
 
     override suspend fun downloadToCache(fileId: String, fileName: String): File? =
         withContext(Dispatchers.IO) {
-            runCatching {
+            var out: File? = null
+            try {
                 val response = transferApi.download(fileId)
-                val body = response.body() ?: return@runCatching null
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body() ?: return@withContext null
                 val dir = File(context.cacheDir, "previews").apply { mkdirs() }
                 // Namespace by id so two files with the same display name don't collide.
-                val safeName = fileName.substringAfterLast('/').ifBlank { fileId }
-                val out = File(dir, "$fileId-$safeName")
-                body.byteStream().use { input -> out.outputStream().use { input.copyTo(it) } }
-                out
-            }.getOrNull()
+                val safeName = fileName.safeOutputFileName(fileId)
+                val file = File(dir, "$fileId-$safeName")
+                out = file
+                body.byteStream().use { input -> file.outputStream().use { input.copyTo(it) } }
+                file
+            } catch (cancelled: CancellationException) {
+                runCatching { out?.delete() }
+                throw cancelled
+            } catch (_: Exception) {
+                runCatching { out?.delete() }
+                null
+            }
         }
+
+    private fun String.safeOutputFileName(fallback: String): String =
+        replace('/', '_').replace('\\', '_').ifBlank { fallback }
 
     private companion object {
         const val PAGE_SIZE = 50

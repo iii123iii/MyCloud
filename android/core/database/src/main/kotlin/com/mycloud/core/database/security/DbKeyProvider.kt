@@ -37,8 +37,8 @@ class DbKeyProvider @Inject constructor(
     private val aead: Aead by lazy { buildAead(context) }
 
     /**
-     * The raw passphrase bytes. A fresh copy is returned each call because
-     * SQLCipher's SupportFactory zeroes the array it is handed after opening.
+     * The raw passphrase bytes. A fresh copy is returned each call because the
+     * SQLCipher open-helper factory may zero the array it is handed after opening.
      */
     fun passphrase(): ByteArray = runBlocking {
         val existing = runCatching { context.dbKeyDataStore.data.first()[keyPref] }

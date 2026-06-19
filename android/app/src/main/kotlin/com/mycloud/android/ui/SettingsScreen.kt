@@ -1,5 +1,9 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.mycloud.android.ui
 
+import android.app.KeyguardManager
+import android.text.format.DateUtils
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,7 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -29,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,9 +45,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.getSystemService
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mycloud.core.common.util.ByteFormatter
@@ -61,9 +72,13 @@ fun SettingsScreen(
     val user by viewModel.user.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val appLockEnabled by viewModel.appLockEnabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val deviceSecure = remember { context.getSystemService<KeyguardManager>()?.isDeviceSecure == true }
     var showCreateToken by remember { mutableStateOf(false) }
     var showChangePassword by remember { mutableStateOf(false) }
     var showDeleteAccount by remember { mutableStateOf(false) }
+    var showSignOutConfirm by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -75,6 +90,17 @@ fun SettingsScreen(
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
 
+        (state.actionError ?: state.accountError)?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
+
         SectionTitle("Account")
         user?.let { current ->
             Text(current.username, style = MaterialTheme.typography.titleMedium)
@@ -83,6 +109,10 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        } ?: Row(verticalAlignment = Alignment.CenterVertically) {
+            LoadingIndicator(Modifier.size(18.dp))
+            Spacer(Modifier.size(8.dp))
+            EmptyHint("Loading account…")
         }
 
         HorizontalDivider()
@@ -98,18 +128,30 @@ fun SettingsScreen(
             }
         }
 
-        state.stats?.let { s ->
-            HorizontalDivider()
-            SectionTitle("Storage")
-            LinearProgressIndicator(
-                progress = { ByteFormatter.usedFraction(s.usedBytes, s.quotaBytes) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "${ByteFormatter.format(s.usedBytes)} of ${ByteFormatter.format(s.quotaBytes)} used",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        HorizontalDivider()
+        SectionTitle("Storage")
+        val stats = state.stats
+        when {
+            stats != null -> {
+                LinearProgressIndicator(
+                    progress = { ByteFormatter.usedFraction(stats.usedBytes, stats.quotaBytes) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "${ByteFormatter.format(stats.usedBytes)} of ${ByteFormatter.format(stats.quotaBytes)} used",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            state.statsLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                LoadingIndicator(Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                EmptyHint("Loading storage usage…")
+            }
+            else -> {
+                EmptyHint(state.statsError ?: "Couldn't load storage usage.")
+                TextButton(onClick = viewModel::loadStats) { Text("Retry") }
+            }
         }
 
         HorizontalDivider()
@@ -145,13 +187,30 @@ fun SettingsScreen(
 
         HorizontalDivider()
         SectionTitle("Security")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("App lock", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    if (deviceSecure) "Require biometrics or device PIN to open MyCloud"
+                    else "Set up a device screen lock to enable",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = appLockEnabled && deviceSecure,
+                onCheckedChange = { viewModel.setAppLockEnabled(it) },
+                enabled = deviceSecure,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = { showChangePassword = true },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Change password") }
 
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
+        OutlinedButton(onClick = { showSignOutConfirm = true }, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
 
         Spacer(Modifier.height(8.dp))
         SectionTitle("Danger zone")
@@ -190,18 +249,43 @@ fun SettingsScreen(
         )
     }
 
+    if (showSignOutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSignOutConfirm = false },
+            title = { Text("Sign out?") },
+            text = { Text("You'll need to sign in again to access your files on this device.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSignOutConfirm = false
+                    onSignOut()
+                }) { Text("Sign out") }
+            },
+            dismissButton = { TextButton(onClick = { showSignOutConfirm = false }) { Text("Cancel") } },
+        )
+    }
+
     if (showCreateToken) {
         CreateTokenDialog(
-            onConfirm = {
-                viewModel.createToken(it)
+            error = state.createTokenError,
+            // The secret being issued closes the create dialog and opens SecretDialog.
+            secretIssued = state.createdTokenSecret != null,
+            onConfirm = { viewModel.createToken(it) },
+            onDismiss = {
                 showCreateToken = false
+                viewModel.clearCreateTokenError()
             },
-            onDismiss = { showCreateToken = false },
         )
     }
 
     state.createdTokenSecret?.let { secret ->
-        SecretDialog(secret = secret, onDismiss = viewModel::clearCreatedToken)
+        // No outside-dismiss: the one-time secret is only retrievable here.
+        SecretDialog(
+            secret = secret,
+            onDone = {
+                viewModel.clearCreatedToken()
+                showCreateToken = false
+            },
+        )
     }
 }
 
@@ -228,20 +312,35 @@ private fun SessionRow(session: Session, onRevoke: () -> Unit) {
             }
         }
         if (!session.isCurrent) {
-            TextButton(onClick = onRevoke) { Text("Revoke") }
+            val label = session.deviceLabel ?: "this device"
+            TextButton(
+                onClick = onRevoke,
+                modifier = Modifier.semantics { contentDescription = "Revoke session for $label" },
+            ) { Text("Revoke") }
         }
     }
 }
 
 @Composable
 private fun ActivityRow(entry: ActivityEntry) {
-    Text(
-        buildString {
-            append(entry.action)
-            entry.resourceType?.let { append(" • $it") }
-        },
-        style = MaterialTheme.typography.bodySmall,
-    )
+    Column {
+        Text(
+            buildString {
+                append(entry.action)
+                entry.resourceType?.let { append(" • $it") }
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            DateUtils.getRelativeTimeSpanString(
+                entry.createdAtMillis,
+                System.currentTimeMillis(),
+                DateUtils.MINUTE_IN_MILLIS,
+            ).toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
@@ -255,29 +354,55 @@ private fun TokenRow(token: PersonalAccessToken, onRevoke: () -> Unit) {
             }
         }
         IconButton(onClick = onRevoke) {
-            Icon(Icons.Filled.Delete, contentDescription = "Revoke token")
+            Icon(Icons.Filled.Delete, contentDescription = "Revoke token ${token.name}")
         }
     }
 }
 
 @Composable
-private fun CreateTokenDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+private fun CreateTokenDialog(
+    error: String?,
+    secretIssued: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     var name by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    // The secret arriving (or an error) ends the in-flight state.
+    LaunchedEffect(secretIssued, error) {
+        if (secretIssued || error != null) submitting = false
+    }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!submitting) onDismiss() },
         title = { Text("New access token") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                label = { Text("Token name") },
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    enabled = !submitting,
+                    label = { Text("Token name") },
+                )
+                error?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Create") }
+            TextButton(
+                onClick = { submitting = true; onConfirm(name) },
+                enabled = name.isNotBlank() && !submitting,
+            ) {
+                if (submitting) LoadingIndicator(Modifier.size(18.dp)) else Text("Create")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !submitting) { Text("Cancel") } },
     )
 }
 
@@ -342,7 +467,7 @@ private fun ChangePasswordDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(oldPassword, newPassword) }, enabled = canSubmit) {
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Update")
+                if (busy) LoadingIndicator(Modifier.size(18.dp)) else Text("Update")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
@@ -386,7 +511,7 @@ private fun DeleteAccountDialog(
                 enabled = !busy && password.isNotBlank(),
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
             ) {
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Delete")
+                if (busy) LoadingIndicator(Modifier.size(18.dp)) else Text("Delete")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
@@ -394,10 +519,11 @@ private fun DeleteAccountDialog(
 }
 
 @Composable
-private fun SecretDialog(secret: String, onDismiss: () -> Unit) {
+private fun SecretDialog(secret: String, onDone: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     AlertDialog(
-        onDismissRequest = onDismiss,
+        // Only dismiss via explicit Copy/Done — tapping outside must not lose the one-time secret.
+        onDismissRequest = {},
         title = { Text("Token created") },
         text = {
             Column {
@@ -413,6 +539,6 @@ private fun SecretDialog(secret: String, onDismiss: () -> Unit) {
         confirmButton = {
             Button(onClick = { clipboard.setText(AnnotatedString(secret)) }) { Text("Copy") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = { TextButton(onClick = onDone) { Text("Done") } },
     )
 }

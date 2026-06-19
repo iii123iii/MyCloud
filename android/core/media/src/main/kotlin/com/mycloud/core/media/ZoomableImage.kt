@@ -1,7 +1,10 @@
 package com.mycloud.core.media
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -15,7 +18,10 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import coil3.compose.AsyncImage
 
 /**
@@ -36,10 +42,29 @@ fun ZoomableImage(
     Box(
         modifier = modifier
             .clipToBounds()
+            .semantics {
+                // Best-effort: expose the current zoom level to accessibility services.
+                stateDescription = if (scale > 1f) {
+                    "Zoomed in ${"%.1f".format(scale)} times"
+                } else {
+                    "Not zoomed"
+                }
+            }
             .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, maxScale)
-                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val zoom = event.calculateZoom()
+                        val pan = event.calculatePan()
+                        if (zoom != 1f || (scale > 1f && pan != Offset.Zero)) {
+                            scale = (scale * zoom).coerceIn(1f, maxScale)
+                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                            // Consume so the parent vertical scroll doesn't steal the
+                            // pinch/pan while the image is zoomed.
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
                 }
             }
             .pointerInput(Unit) {

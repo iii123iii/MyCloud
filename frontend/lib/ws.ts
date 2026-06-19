@@ -26,7 +26,13 @@ export type WSEnvelope = {
     | "resync"
     // Server pushes this on session revocation so revoked devices can
     // boot themselves out immediately instead of waiting for the next 401.
-    | "session_revoked";
+    | "session_revoked"
+    // QR device linking: a phone scanned the QR (awaiting the browser's
+    // approval), and a device finished linking (tokens delivered). Both are
+    // published on the user's own topic so the browser updates the QR panel
+    // live without polling.
+    | "device_link_scanned"
+    | "device_link_consumed";
   topic?: string;
   ts?: number;
   data?: unknown;

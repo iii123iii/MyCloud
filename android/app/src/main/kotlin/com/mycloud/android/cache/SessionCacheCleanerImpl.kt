@@ -41,6 +41,9 @@ class SessionCacheCleanerImpl @Inject constructor(
             // the loader's references differ from the default locations.
             runCatching { File(context.cacheDir, "image_cache").deleteRecursively() }
             runCatching { File(context.cacheDir, "previews").deleteRecursively() }
+            // Pending archive-download selections (written under filesDir by the
+            // transfer layer) — drop them so a signed-out session leaves nothing.
+            runCatching { File(context.filesDir, "archive_requests").deleteRecursively() }
         }
     }
 }

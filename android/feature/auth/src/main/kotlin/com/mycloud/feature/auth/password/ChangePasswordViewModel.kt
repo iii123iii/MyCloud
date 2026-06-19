@@ -19,11 +19,16 @@ data class ChangePasswordUiState(
     val confirmPassword: String = "",
     val isSubmitting: Boolean = false,
     val errorMessage: String? = null,
+    val success: Boolean = false,
 ) {
+    /** True once the user has typed a confirmation that doesn't match the new password. */
+    val passwordsMismatch: Boolean
+        get() = confirmPassword.isNotEmpty() && newPassword != confirmPassword
+
     val canSubmit: Boolean
         get() = oldPassword.isNotBlank() &&
             newPassword.length >= MIN_LENGTH &&
-            confirmPassword.isNotBlank() &&
+            confirmPassword == newPassword &&
             !isSubmitting
 
     companion object {
@@ -39,9 +44,9 @@ class ChangePasswordViewModel @Inject constructor(
     private val _state = MutableStateFlow(ChangePasswordUiState())
     val state: StateFlow<ChangePasswordUiState> = _state.asStateFlow()
 
-    fun onOldChange(v: String) = _state.update { it.copy(oldPassword = v, errorMessage = null) }
-    fun onNewChange(v: String) = _state.update { it.copy(newPassword = v, errorMessage = null) }
-    fun onConfirmChange(v: String) = _state.update { it.copy(confirmPassword = v, errorMessage = null) }
+    fun onOldChange(v: String) = _state.update { it.copy(oldPassword = v, errorMessage = null, success = false) }
+    fun onNewChange(v: String) = _state.update { it.copy(newPassword = v, errorMessage = null, success = false) }
+    fun onConfirmChange(v: String) = _state.update { it.copy(confirmPassword = v, errorMessage = null, success = false) }
 
     fun submit() {
         val s = _state.value
@@ -55,7 +60,8 @@ class ChangePasswordViewModel @Inject constructor(
             val result = authRepository.changePassword(s.oldPassword, s.newPassword)
             _state.update {
                 if (result is NetworkResult.Success) {
-                    ChangePasswordUiState() // reset; the gate navigates away on success
+                    // Reset fields but flag success so the screen can confirm before the gate navigates away.
+                    ChangePasswordUiState(success = true)
                 } else {
                     it.copy(isSubmitting = false, errorMessage = result.userMessageOrNull())
                 }

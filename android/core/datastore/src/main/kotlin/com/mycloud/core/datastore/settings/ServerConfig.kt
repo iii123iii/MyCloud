@@ -46,6 +46,14 @@ class ServerConfig @Inject constructor(
         loaded.set(true)
     }
 
+    /**
+     * Synchronous read for the OkHttp host-selection interceptor / Coil URL builders,
+     * which can't suspend. [load] is awaited once at startup (in `restoreSession`),
+     * after which `loaded` is set and this returns the in-memory [cached] value with
+     * no blocking. The [runBlocking] below is a one-time guarded fallback for the
+     * rare case `current()` is hit before that startup load — it reads a single
+     * DataStore value and is never re-entered.
+     */
     private fun read(): String? {
         if (loaded.compareAndSet(false, true)) {
             cached = runBlocking {
@@ -58,7 +66,13 @@ class ServerConfig @Inject constructor(
     private fun normalize(raw: String): String {
         var s = raw.trim()
         if (s.isEmpty()) return DEFAULT
-        if (!s.startsWith("http://") && !s.startsWith("https://")) s = "http://$s"
+        // Default to https when no scheme is given — never silently fall back to
+        // plaintext http. A user who really needs http must type it explicitly.
+        if (!s.startsWith("http://", ignoreCase = true) &&
+            !s.startsWith("https://", ignoreCase = true)
+        ) {
+            s = "https://$s"
+        }
         if (!s.endsWith("/")) s = "$s/"
         return s
     }
