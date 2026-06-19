@@ -52,11 +52,38 @@ interface ScannedInfo {
 // The payload encoded into the QR. The phone parses this JSON: `url` tells it
 // which server to talk to (auto-config), `code`+`verifier` authorise the claim.
 function qrPayload(ticket: DeviceLinkTicket): string {
-  const url =
+  const url = normalizeQrUrl(
     ticket.url ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    (typeof window !== "undefined" ? window.location.origin : "");
+      process.env.NEXT_PUBLIC_API_URL ||
+      (typeof window !== "undefined" ? window.location.origin : ""),
+  );
   return JSON.stringify({ v: 1, url, code: ticket.code, verifier: ticket.verifier });
+}
+
+function normalizeQrUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "https:" && isPrivateLanHost(url.hostname)) {
+      url.protocol = "http:";
+      if (url.port === "443") url.port = "";
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return raw;
+  }
+}
+
+function isPrivateLanHost(host: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost") return true;
+  if (normalized.startsWith("192.168.")) return true;
+  if (normalized.startsWith("10.")) return true;
+  const parts = normalized.split(".");
+  if (parts.length === 4 && parts[0] === "172") {
+    const second = Number.parseInt(parts[1], 10);
+    return second >= 16 && second <= 31;
+  }
+  return normalized === "::1" || normalized.startsWith("fd") || normalized.startsWith("fe80:");
 }
 
 function secondsUntil(timestamp: string): number {

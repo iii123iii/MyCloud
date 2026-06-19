@@ -37,6 +37,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"mycloud/backend-go/internal/httpapi"
+	"mycloud/backend-go/internal/logging"
 	"mycloud/backend-go/internal/wsHub"
 )
 
@@ -129,10 +130,18 @@ func (a *App) handleDeviceLinkCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.Redis.PExpire(ctx, key, pairPendingTTL).Err()
+	publicURL := a.publicBackendURL(r)
+	logging.FromContext(ctx).Info("device_link_create",
+		"code", code,
+		"public_url", publicURL,
+		"host", r.Host,
+		"x_forwarded_proto", r.Header.Get("X-Forwarded-Proto"),
+		"x_forwarded_host", r.Header.Get("X-Forwarded-Host"),
+	)
 	httpapi.JSON(w, http.StatusOK, map[string]any{
 		"code":       code,
 		"verifier":   verifier,
-		"url":        a.publicBackendURL(r),
+		"url":        publicURL,
 		"expires_at": expiresAt.Format(time.RFC3339),
 	}, nil)
 }
